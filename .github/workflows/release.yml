@@ -27,18 +27,19 @@ jobs:
         id: fe
         run: |
           FE_TAG="${{ github.ref_name }}"
-          # 列车各仓 bump PR 合并有先后,frontend tagger 可能晚于本仓 Release 触发(1.15.0 实测晚 7 分钟
-          # →frontend 镜像曾误用回退 main 构建);等待同号 tag 至多 10 分钟再回退
-          for i in $(seq 1 20); do
+          # 列车各仓 bump PR 合并有先后,frontend tagger 可能晚于本仓 Release 触发
+          # (1.15.0 实测晚 7 分钟;0.15.12/0.15.13 两版曾因回退 main 发出上一版产物,
+          # 见下方硬校验)。等待同号 tag 至多 20 分钟再回退;回退构建由版本断言兜底。
+          for i in $(seq 1 40); do
             git ls-remote https://github.com/pigeonbox/frontend.git "refs/tags/${FE_TAG}" | grep -q . && break
-            echo "等待 frontend 同号 tag ${FE_TAG}($i/20,30s 后重试)"; sleep 30
+            echo "等待 frontend 同号 tag ${FE_TAG}($i/40,30s 后重试)"; sleep 30
           done
           if git ls-remote https://github.com/pigeonbox/frontend.git "refs/tags/${FE_TAG}" | grep -q .; then
             echo "ref=${FE_TAG}" >> "$GITHUB_OUTPUT"
             echo "frontend 检出同号 tag ${FE_TAG}(可复现)"
           else
             echo "ref=" >> "$GITHUB_OUTPUT"
-            echo "::warning::frontend 仓无同号 tag ${FE_TAG}(已等 10 分钟),回退 main(不可复现;列车 bump 会为 frontend 打同号 tag)"
+            echo "::warning::frontend 仓无同号 tag ${FE_TAG}(已等 20 分钟),回退 main——下方版本硬校验会拦住错版源码"
           fi
       - uses: actions/checkout@v7
         with:
@@ -50,6 +51,21 @@ jobs:
           mkdir -p ${{ github.workspace }}/ws
           mv server frontend ${{ github.workspace }}/ws/
           printf '*/.git\n**/node_modules\n*/bin\n*/data\n*/logs\ngo.work\ngo.work.sum\n' > ${{ github.workspace }}/ws/.dockerignore
+
+      # 硬校验:frontend 源码版本必须与本 tag 同号(2026-10-12)。
+      # 回退 main 构建曾把上一版前端产物当新版本发布(0.15.12/0.15.13 镜像实为
+      # 0.15.11 的资产,仅 ::warning:: 无人拦截);静默发错版比失败更糟——不匹配
+      # 直接红,待 frontend 同号 tag/主干 bump 合入后 re-run 本工作流即可。
+      - name: 断言 frontend 源码版本与 tag 同号
+        run: |
+          EXPECT="${{ github.ref_name }}"
+          EXPECT="${EXPECT#v}"
+          GOT="$(node -p "require('${{ github.workspace }}/ws/frontend/package.json').version")"
+          if [ "$GOT" != "$EXPECT" ]; then
+            echo "::error::frontend 源码版本($GOT)与 tag(${{ github.ref_name }})不同号(检出 ref: ${{ steps.fe.outputs.ref || 'main(回退)' }})。拒绝构建错版镜像;请等 frontend bump 合入/同号 tag 就绪后 re-run。"
+            exit 1
+          fi
+          echo "frontend 版本 $GOT 与 tag 同号 ✓(检出 ref: ${{ steps.fe.outputs.ref || 'main(回退)' }})"
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
