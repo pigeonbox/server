@@ -128,7 +128,7 @@ jobs:
       # 回调只是唤醒信号,丢失由 hub 15 分钟 sweep 兜底——故失败仅告警不阻断。
       - name: 回调 hub 列车编排器
         env:
-          CB_TOKEN: ${{ secrets.PB_BOT_TOKEN || secrets.CHARTS_PAT }}
+          CB_TOKEN: ${{ secrets.PB_BOT_TOKEN }}
         run: |
           curl -fsSL -X POST \
             -H "Authorization: Bearer $CB_TOKEN" \
