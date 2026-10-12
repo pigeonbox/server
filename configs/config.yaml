@@ -2,7 +2,7 @@ server:
   host: "0.0.0.0"
   port: 12345
   mode: "release"  # 镜像内默认 release(调试日志不打);compose/编排可用 PB_SERVER_MODE=debug 覆盖
-  base_url: "http://localhost:12345"
+  base_url: ""             # 对外可达地址（生成分享链接用）；空=按请求来源逐请求推断（含端口，反代须透传 Host）
   read_timeout: 30
   write_timeout: 30
 
