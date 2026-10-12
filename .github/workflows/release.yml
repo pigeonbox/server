@@ -21,26 +21,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with: { path: server }
-      # frontend 与 server 同号打 tag(2026-10-08 列车治理 D2):优先检出同号 tag
-      # 保证可复现;tag 未就绪时回退 main 并大声警告(过渡期形态,下一列车起消失)
-      - name: 解析 frontend ref(同号 tag 优先)
+      # 列车 v2:编排器保证 frontend 同号 tag 先于 server tag 存在,轮询已删除;
+      # tag 不在即失败——回退 main 是 0.15.12/0.15.13 幽灵产物温床,永久封死。
+      - name: 解析 frontend ref(同号 tag 硬门)
         id: fe
         run: |
           FE_TAG="${{ github.ref_name }}"
-          # 列车各仓 bump PR 合并有先后,frontend tagger 可能晚于本仓 Release 触发
-          # (1.15.0 实测晚 7 分钟;0.15.12/0.15.13 两版曾因回退 main 发出上一版产物,
-          # 见下方硬校验)。等待同号 tag 至多 20 分钟再回退;回退构建由版本断言兜底。
-          for i in $(seq 1 40); do
-            git ls-remote https://github.com/pigeonbox/frontend.git "refs/tags/${FE_TAG}" | grep -q . && break
-            echo "等待 frontend 同号 tag ${FE_TAG}($i/40,30s 后重试)"; sleep 30
-          done
-          if git ls-remote https://github.com/pigeonbox/frontend.git "refs/tags/${FE_TAG}" | grep -q .; then
-            echo "ref=${FE_TAG}" >> "$GITHUB_OUTPUT"
-            echo "frontend 检出同号 tag ${FE_TAG}(可复现)"
-          else
-            echo "ref=" >> "$GITHUB_OUTPUT"
-            echo "::warning::frontend 仓无同号 tag ${FE_TAG}(已等 20 分钟),回退 main——下方版本硬校验会拦住错版源码"
-          fi
+          git ls-remote https://github.com/pigeonbox/frontend.git "refs/tags/${FE_TAG}" | grep -q . \
+            || { echo "::error::frontend 仓无同号 tag ${FE_TAG}——发版走 hub 列车编排器(先 frontend 后 server),勿手打 server tag"; exit 1; }
+          echo "ref=${FE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "frontend 检出同号 tag ${FE_TAG}(可复现)"
       - uses: actions/checkout@v7
         with:
           repository: pigeonbox/frontend
