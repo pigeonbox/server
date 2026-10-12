@@ -132,16 +132,17 @@ jobs:
         # 不再 continue-on-error：权限修复后本步骤已被证明可用，再静默吞错只会
         # 重演 v0.12.6/v0.13.0 Release 页缺失数日无人知（2026-10-06 治理）
 
-      # ── chart appVersion 自动对齐 ──
-      # 镜像发布成功后通知 charts 仓：appVersion 对齐本 tag、chart version 自动
-      # +1 并由其既有 Release Charts 工作流发版（Pages + OCI）。CHARTS_PAT 为
-      # 对 charts 仓有 contents:write/dispatch 权限的 token（仓库 Secrets 配置）。
-      - name: Dispatch charts appVersion sync
+      # ── 回调 hub 列车编排器 ──
+      # 镜像发布成功后唤醒 train-orchestrator advance 核对完成度。charts 对齐不再由
+      # 本仓 dispatch(列车 v2 起编排器直提 Chart.yaml,双写会致 chart 版本双跳)。
+      # 回调只是唤醒信号,丢失由 hub 15 分钟 sweep 兜底——故失败仅告警不阻断。
+      - name: 回调 hub 列车编排器
+        env:
+          CB_TOKEN: ${{ secrets.PB_BOT_TOKEN || secrets.CHARTS_PAT }}
         run: |
           curl -fsSL -X POST \
-            -H "Authorization: Bearer ${{ secrets.CHARTS_PAT }}" \
+            -H "Authorization: Bearer $CB_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/pigeonbox/charts/dispatches \
-            -d '{"event_type":"component-release","client_payload":{"app_version":"${{ github.ref_name }}"}}'
-        # 不再 continue-on-error：CHARTS_PAT→charts RELEASE_PAT 链路已通，断链要
-        # 响（此前静默吞 403 致 chart 1.3.12/13/14 发版缺失，2026-10-06 治理）
+            https://api.github.com/repos/pigeonbox/pigeonbox/dispatches \
+            -d '{"event_type":"train-advance","client_payload":{"component":"server","tag":"${{ github.ref_name }}"}}' \
+            || echo "::warning::hub 回调失败(train-orchestrator sweep 兜底)"
