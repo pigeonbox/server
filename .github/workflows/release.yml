@@ -71,6 +71,9 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
+      - id: p2pc
+        name: Resolve p2pc version
+        run: echo "version=$(cat server/.p2pc-version)" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
         with:
           context: ${{ github.workspace }}/ws
@@ -87,6 +90,7 @@ jobs:
             COMMIT=${{ github.sha }}
             BUILD_TIME=${{ steps.meta.outputs.date }}
             GOPROXY=https://proxy.golang.org,direct
+            P2PC_VERSION=${{ steps.p2pc.outputs.version }}
 
       # ── frontend 镜像（k8s 前后端分离部署；tag 与 server 完全一致）──
       - id: meta-frontend
