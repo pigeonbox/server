@@ -235,6 +235,8 @@ admin:
 # env: PB_FEDERATION_ENABLED / PB_FEDERATION_REGISTRY_URL /
 #      PB_FEDERATION_PUBLIC_URL / PB_FEDERATION_NODE_KEY_PATH /
 #      PB_FEDERATION_MIN_ENTROPY
+#   在线覆盖：管理后台「P2P 与联邦」分区保存后以 DB 值为准（SystemConfig
+#   overlay，保存即热生效）；本文件/env 仅作首启默认（DB 无 p2p 段时生效）。
 # federation:
 #   enabled: false
 #   registry_url: ""         # 联邦注册中心基址，如 http://p2p:12346；逗号分隔可配主备
