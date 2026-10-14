@@ -55,6 +55,8 @@ func main() {
 		err = cmdList()
 	case "url":
 		err = cmdURL(rest)
+	case "p2p":
+		p2pCmd(rest)
 	case "rm":
 		err = cmdDelete(rest)
 	case "help", "-h", "--help":
@@ -89,7 +91,107 @@ func usage() {
   ls                      我的分享列表
   url <code>              获取分享下载直链
   rm <code>               删除分享
+
+设备直传(admin API Key;2026-10-14):
+  p2p status              直传状态(启用/p2pc/注册中心/收件区)
+  p2p tasks               直传任务列表
+  p2p send <path...>      发起发送(服务器路径,须在白名单内)→ 输出口令
+  p2p recv <口令>          凭口令接收(落收件暂存区)
+  p2p cancel <task_id>    取消任务
+  p2p invites             待收邀请列表
+  p2p accept <invite_id>  认领邀请并接收
+  p2p push <目标地址> <口令> [附言]   推送口令到另一实例(免口令交接)
 `)
+}
+
+// ===== p2p 设备直传(2026-10-14;admin 用户的 API Key,服务端 AdminOrAdminKey 复核角色) =====
+
+func p2pCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "✗ 缺少 p2p 子命令(status/tasks/send/recv/cancel/invites/accept/push)")
+		os.Exit(2)
+	}
+	sub, rest := args[0], args[1:]
+	var err error
+	switch sub {
+	case "status":
+		err = p2pGet("/admin/p2p/status")
+	case "tasks":
+		err = p2pGet("/admin/p2p/tasks")
+	case "invites":
+		err = p2pGet("/admin/p2p/invites")
+	case "send":
+		if len(rest) == 0 {
+			fmt.Fprintln(os.Stderr, "✗ p2p send 需要至少一个服务器路径")
+			os.Exit(2)
+		}
+		err = p2pPost("/admin/p2p/send", map[string]any{"paths": rest})
+	case "recv":
+		if len(rest) == 0 {
+			fmt.Fprintln(os.Stderr, "✗ p2p recv 需要口令")
+			os.Exit(2)
+		}
+		err = p2pPost("/admin/p2p/recv", map[string]any{"code": rest[0]})
+	case "cancel":
+		if len(rest) == 0 {
+			fmt.Fprintln(os.Stderr, "✗ p2p cancel 需要 task_id")
+			os.Exit(2)
+		}
+		err = p2pPost("/admin/p2p/cancel", map[string]any{"task_id": rest[0]})
+	case "accept":
+		if len(rest) == 0 {
+			fmt.Fprintln(os.Stderr, "✗ p2p accept 需要 invite_id")
+			os.Exit(2)
+		}
+		err = p2pPost("/admin/p2p/invites/accept", map[string]any{"invite_id": rest[0]})
+	case "push":
+		if len(rest) < 2 {
+			fmt.Fprintln(os.Stderr, "✗ p2p push 需要 <目标实例地址> <口令> [附言]")
+			os.Exit(2)
+		}
+		err = p2pPost("/admin/p2p/invite-push", map[string]any{
+			"target_url": rest[0], "code": rest[1],
+			"note": strings.Join(rest[2:], " "), "from_name": "",
+		})
+	default:
+		fmt.Fprintf(os.Stderr, "✗ 未知 p2p 子命令: %s\n", sub)
+		os.Exit(2)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "✗ %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func p2pGet(path string) error {
+	ar, err := doReq("GET", path, nil, "")
+	if err != nil {
+		return err
+	}
+	return prettyPrint(ar.Data)
+}
+
+func p2pPost(path string, payload map[string]any) error {
+	b, _ := json.Marshal(payload)
+	ar, err := doReq("POST", path, bytes.NewReader(b), "application/json")
+	if err != nil {
+		return err
+	}
+	return prettyPrint(ar.Data)
+}
+
+func prettyPrint(raw json.RawMessage) error {
+	if len(raw) == 0 {
+		fmt.Println("ok")
+		return nil
+	}
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, raw, "", "  "); err != nil {
+		fmt.Println(string(raw))
+		return nil
+	}
+	fmt.Println(buf.String())
+	return nil
 }
 
 func envOr(k, def string) string {
