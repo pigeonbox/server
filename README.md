@@ -25,7 +25,7 @@ PigeonBox 独立部署应用:**纯后端**薄壳入口(main.go)+ 配置模板 + 
 
 ```
 ├── cmd/server/main.go   # 信号处理 + bootstrap.Bootstrap() 拉起 core
-├── cmd/pb/             # 官方 CLI 客户端(文本/文件分享、本地导入、我的分享管理;API Key 认证)
+├── cmd/pb/             # 官方 CLI 客户端(文本/文件分享、本地导入、我的分享管理、p2p 设备直传;API Key 认证)
 ├── configs/             # config.yaml / config.example.yaml / config.prod.yaml
 ├── Dockerfile           # 两阶段:go-builder → runtime(Go 依赖经 module proxy 拉正式版本)
 ├── .p2pc-version        # 随包 p2pc(设备直传)版本真相源(发布列车管理,勿手改)
@@ -68,7 +68,12 @@ Dockerfile 构建参数 `P2PC_VERSION` 按 TARGETARCH 从
 运行期由 core `p2px` 域服务调度(spawn `/app/p2pc` 子进程做数据面),**仅
 standalone 部署模式可用**;管理入口在 admin「系统配置 → P2P」分区的 direct
 子段(启用开关/收文件目录/白名单发送根/配额/二进制路径),操作台为独立的
-「设备直传」页。
+「设备直传」页(含联邦推送邀请面板:待收/认领/推送)。
+
+官方 CLI `pb` 覆盖直传管理面:`pb p2p` 八支子命令(status/tasks/send/recv/
+cancel/invites/accept/push),走 admin API Key 通道(服务端 AdminOrAdminKey
+复核 admin 角色);联邦实例间推送邀请经 `pb p2p push <目标地址> <口令> [附言]`
+或 Web 控制台「设备直传」页操作。
 
 ## 与 fnos 的关系
 
