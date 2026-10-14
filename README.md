@@ -28,6 +28,7 @@ PigeonBox 独立部署应用:**纯后端**薄壳入口(main.go)+ 配置模板 + 
 ├── cmd/pb/             # 官方 CLI 客户端(文本/文件分享、本地导入、我的分享管理;API Key 认证)
 ├── configs/             # config.yaml / config.example.yaml / config.prod.yaml
 ├── Dockerfile           # 两阶段:go-builder → runtime(Go 依赖经 module proxy 拉正式版本)
+├── .p2pc-version        # 随包 p2pc(设备直传)版本真相源(发布列车管理,勿手改)
 └── Makefile
 ```
 
@@ -55,6 +56,19 @@ make test
 docker build -f server/Dockerfile -t pigeonbox-server ..   # 在 server/ 内执行
 # 或 make docker-build
 ```
+
+## 随包 p2pc(设备直传)
+
+Dockerfile 构建参数 `P2PC_VERSION` 按 TARGETARCH 从
+[p2p Releases](https://github.com/pigeonbox/p2p/releases) 拉取 `p2pc-<triple>`
+二进制(附 sha256 校验)装入镜像 `/app/p2pc`;版本真相源为本仓 `.p2pc-version`
+(发布列车管理)。`P2PC_VERSION` 缺省为空时跳过安装,镜像优雅降级(设备直传
+不可用,其余功能不受影响)。
+
+运行期由 core `p2px` 域服务调度(spawn `/app/p2pc` 子进程做数据面),**仅
+standalone 部署模式可用**;管理入口在 admin「系统配置 → P2P」分区的 direct
+子段(启用开关/收文件目录/白名单发送根/配额/二进制路径),操作台为独立的
+「设备直传」页。
 
 ## 与 fnos 的关系
 
