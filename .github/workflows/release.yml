@@ -73,7 +73,13 @@ jobs:
             type=raw,value=latest
       - id: p2pc
         name: Resolve p2pc version
-        run: echo "version=$(cat server/.p2pc-version)" >> "$GITHUB_OUTPUT"
+        run: |
+          # 注意:布局步骤已把 server/ 移入 ws/——1.22.0 前误读旧路径静默得空串,
+          # 镜像从未带 p2pc(真机 10.10.10.3 部署实测发现);此处显式断言非空。
+          set -euo pipefail
+          V="$(cat "${{ github.workspace }}/ws/server/.p2pc-version" | tr -d ' \r\n')"
+          [ -n "$V" ] || { echo "::error::.p2pc-version 为空——镜像将缺 p2pc"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
         with:
           context: ${{ github.workspace }}/ws
