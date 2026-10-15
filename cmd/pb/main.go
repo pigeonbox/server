@@ -108,7 +108,7 @@ func usage() {
 
 func p2pCmd(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "✗ 缺少 p2p 子命令(status/tasks/send/recv/cancel/invites/accept/push)")
+		fmt.Fprintln(os.Stderr, "✗ 缺少 p2p 子命令(status/peers/tasks/send/recv/cancel/invites/accept/push)")
 		os.Exit(2)
 	}
 	sub, rest := args[0], args[1:]
@@ -116,16 +116,49 @@ func p2pCmd(args []string) {
 	switch sub {
 	case "status":
 		err = p2pGet("/admin/p2p/status")
+	case "peers":
+		err = p2pGet("/admin/p2p/directory")
 	case "tasks":
 		err = p2pGet("/admin/p2p/tasks")
 	case "invites":
 		err = p2pGet("/admin/p2p/invites")
 	case "send":
-		if len(rest) == 0 {
+		// 位置无关解析:--invite-to/--invite-note 旗标 + 其余为发送路径
+		// (2026-10-15 名录邀请接线;路径仍须命中 send_roots 白名单)
+		var inviteTo, inviteNote string
+		var paths []string
+		for i := 0; i < len(rest); i++ {
+			switch {
+			case (rest[i] == "--invite-to" || rest[i] == "-invite-to") && i+1 < len(rest):
+				i++
+				inviteTo = strings.ToLower(strings.TrimSpace(rest[i]))
+			case strings.HasPrefix(rest[i], "--invite-to="), strings.HasPrefix(rest[i], "-invite-to="):
+				inviteTo = strings.ToLower(strings.TrimSpace(strings.SplitN(rest[i], "=", 2)[1]))
+			case (rest[i] == "--invite-note" || rest[i] == "-invite-note") && i+1 < len(rest):
+				i++
+				inviteNote = rest[i]
+			case strings.HasPrefix(rest[i], "--invite-note="), strings.HasPrefix(rest[i], "-invite-note="):
+				inviteNote = strings.SplitN(rest[i], "=", 2)[1]
+			default:
+				paths = append(paths, rest[i])
+			}
+		}
+		if len(paths) == 0 {
 			fmt.Fprintln(os.Stderr, "✗ p2p send 需要至少一个服务器路径")
 			os.Exit(2)
 		}
-		err = p2pPost("/admin/p2p/send", map[string]any{"paths": rest})
+		body := map[string]any{"paths": paths}
+		if inviteTo != "" {
+			if len(inviteTo) != 64 {
+				fmt.Fprintln(os.Stderr, "✗ --invite-to 须为 64 位 node_id hex（pb p2p peers 查询名录）")
+				os.Exit(2)
+			}
+			body["invite_to"] = inviteTo
+			if inviteNote != "" {
+				body["invite_note"] = inviteNote
+			}
+		}
+		err = p2pPost("/admin/p2p/send", body)
 	case "recv":
 		if len(rest) == 0 {
 			fmt.Fprintln(os.Stderr, "✗ p2p recv 需要口令")
