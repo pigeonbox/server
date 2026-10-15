@@ -5,7 +5,7 @@ go 1.26.5
 toolchain go1.26.9
 
 require (
-	github.com/pigeonbox/core v0.22.1
+	github.com/pigeonbox/core v0.23.0
 	go.uber.org/zap v1.27.0
 )
 
