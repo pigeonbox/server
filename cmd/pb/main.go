@@ -24,6 +24,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,15 +86,15 @@ func usage() {
     -e <expire>           有效期: 30m/1h/7d/2w/3M/1y/forever（默认 1d）
     -p <password>         取件密码
     -c <code>             自定义取件码（登录用户）
-    --encrypt             端到端加密（实验性，仅文本）
   import [flags] <path>   服务器本地文件导入（免上传，NAS 场景）
     -e / -p / -c 同 put
   ls                      我的分享列表
-  url <code>              获取分享下载直链
+  url <code>              取分享链接与下载直链（直链含短时效令牌，随取随用勿缓存）
   rm <code>               删除分享
 
 设备直传(admin API Key;2026-10-14):
   p2p status              直传状态(启用/p2pc/注册中心/收件区)
+  p2p peers               在线设备名录(node_id 用于定向邀请)
   p2p tasks               直传任务列表
   p2p send <path...>      发起发送(服务器路径,须在白名单内)→ 输出口令
   p2p recv <口令>          凭口令接收(落收件暂存区)
@@ -297,7 +298,8 @@ func doReq(method, path string, body io.Reader, contentType string) (*apiResp, e
 	}
 	ok := ar.Code == 200 || ar.Code == 0
 	if !ok {
-		return &ar, fmt.Errorf("%s", ar.Message)
+		// 带上业务码：集成者/用户按 code 排查（错误码对照表见文档站 error-codes 页）
+		return &ar, fmt.Errorf("[code %d] %s", ar.Code, ar.Message)
 	}
 	return &ar, nil
 }
@@ -311,7 +313,7 @@ type putFlags struct {
 	code     string
 }
 
-func parsePutFlags(args []string) (*putFlags, []string) {
+func parsePutFlags(args []string) (*putFlags, []string, error) {
 	f := &putFlags{expire: "1d"}
 	var files []string
 	for i := 0; i < len(args); i++ {
@@ -337,14 +339,21 @@ func parsePutFlags(args []string) (*putFlags, []string) {
 				f.code = args[i]
 			}
 		default:
+			// 未知旗标报错而非当文件名吞掉（曾致 --encrypt 报 open --encrypt: no such file）
+			if len(args[i]) > 1 && strings.HasPrefix(args[i], "-") {
+				return nil, nil, fmt.Errorf("未知参数: %s（见 pb help）", args[i])
+			}
 			files = append(files, args[i])
 		}
 	}
-	return f, files
+	return f, files, nil
 }
 
 func cmdPut(args []string) error {
-	f, files := parsePutFlags(args)
+	f, files, err := parsePutFlags(args)
+	if err != nil {
+		return err
+	}
 	expVal, expStyle, err := parseExpire(f.expire)
 	if err != nil {
 		return err
@@ -452,7 +461,10 @@ func putDirect(path string, expVal int, expStyle string, f *putFlags) error {
 // ===== import（服务器本地文件导入）=====
 
 func cmdImport(args []string) error {
-	f, files := parsePutFlags(args)
+	f, files, err := parsePutFlags(args)
+	if err != nil {
+		return err
+	}
 	if len(files) != 1 {
 		return fmt.Errorf("import 需要恰好一个服务器本地路径")
 	}
@@ -517,7 +529,23 @@ func cmdURL(args []string) error {
 	}
 	code := args[0]
 	fmt.Printf("%s/#/share/%s\n", serverURL, code)
-	fmt.Printf("直链（下载令牌需重新取件获取）: %s/share/download?code=%s\n", serverURL, code)
+	// 直链经 /share/select/ 取签名 download_url（旧版直接拼 code 的 URL 缺下载令牌必 401）
+	ar, err := doReq("GET", "/share/select/?code="+url.QueryEscape(code), nil, "")
+	if err != nil {
+		return err
+	}
+	var d struct {
+		DownloadURL string `json:"download_url"`
+		Text        string `json:"text"`
+	}
+	if err := json.Unmarshal(ar.Data, &d); err != nil {
+		return fmt.Errorf("响应解析失败: %w", err)
+	}
+	if d.DownloadURL == "" {
+		fmt.Println("(文本/受保护分享无匿名直链，取件见上方链接)")
+		return nil
+	}
+	fmt.Printf("直链（令牌短时效，随取随用勿缓存）: %s%s\n", serverURL, d.DownloadURL)
 	return nil
 }
 
