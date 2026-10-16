@@ -565,13 +565,17 @@ func cmdDelete(args []string) error {
 
 func printShare(data json.RawMessage) error {
 	var d struct {
-		Code string `json:"code"`
-		URL  string `json:"url"`
+		Code       string `json:"code"`
+		PickupCode string `json:"pickup_code"`
+		URL        string `json:"url"`
 	}
 	if err := json.Unmarshal(data, &d); err != nil {
 		return err
 	}
-	fmt.Printf("取件码: %s\n分享链接: %s/#/share/%s\n", d.Code, serverURL, d.Code)
+	if d.PickupCode != "" {
+		fmt.Printf("取件码（6 位）: %s\n", d.PickupCode)
+	}
+	fmt.Printf("分享码: %s\n分享链接: %s/#/share/%s\n", d.Code, serverURL, d.Code)
 	if d.URL != "" {
 		fmt.Printf("服务端链接: %s\n", d.URL)
 	}
