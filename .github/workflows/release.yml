@@ -82,7 +82,7 @@ jobs:
           V="$(cat "${{ github.workspace }}/ws/server/.p2pc-version" | tr -d ' \r\n')"
           [ -n "$V" ] || { echo "::error::.p2pc-version 为空——镜像将缺 p2pc"; exit 1; }
           echo "version=$V" >> "$GITHUB_OUTPUT"
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: ${{ github.workspace }}/ws
           file: ${{ github.workspace }}/ws/server/Dockerfile
@@ -109,7 +109,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: ${{ github.workspace }}/ws/frontend
           file: ${{ github.workspace }}/ws/frontend/Dockerfile
