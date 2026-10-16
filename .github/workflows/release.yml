@@ -63,6 +63,8 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - id: btime
+        run: echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
       - id: meta
         uses: docker/metadata-action@v5
         with:
@@ -94,7 +96,7 @@ jobs:
           build-args: |
             VERSION=${{ github.ref_name }}
             COMMIT=${{ github.sha }}
-            BUILD_TIME=${{ steps.meta.outputs.date }}
+            BUILD_TIME=${{ steps.btime.outputs.date }}
             GOPROXY=https://proxy.golang.org,direct
             P2PC_VERSION=${{ steps.p2pc.outputs.version }}
 
