@@ -5,9 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/signal"
 	"syscall"
+	"time"
 
+	"github.com/oekit/logx/shutdown"
 	"github.com/pigeonbox/core/bootstrap"
 	"github.com/pigeonbox/core/pkg/logger"
 	"go.uber.org/zap"
@@ -32,13 +33,13 @@ func main() {
 		h.Spin()
 	}()
 
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	// 优雅停机（oekit logx/shutdown，与 p2pd / core Cleanup 同款）：
+	// http 排水拿独立 15s 预算——此前 context.Background() 无界，一个挂死
+	// 连接即卡死整个停机流程，只能靠容器运行时 SIGKILL 兜底；排完后 main
+	// 返回，后台任务排水等核心清理经 defer bootstrap.Cleanup() 接力。
+	mgr := shutdown.New(20 * time.Second)
+	mgr.Add("http", func(ctx context.Context) error { return h.Shutdown(ctx) }, 15*time.Second)
+	mgr.Listen(syscall.SIGINT, syscall.SIGTERM)
 
-	logger.Info("Shutting down server...")
-	if err := h.Shutdown(context.Background()); err != nil {
-		logger.Error("Shutdown error", zap.Error(err))
-	}
 	logger.Info("Server stopped")
 }

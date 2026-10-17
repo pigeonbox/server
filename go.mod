@@ -5,6 +5,7 @@ go 1.26.5
 toolchain go1.26.9
 
 require (
+	github.com/oekit/logx v0.2.0
 	github.com/pigeonbox/core v0.24.0
 	go.uber.org/zap v1.27.0
 )
