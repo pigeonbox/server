@@ -95,10 +95,8 @@ github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
 github.com/oekit/concurrency v0.3.1 h1:CzrHTmeTFUI33SCVRJ9+lTgQsU4hIpU+k9y4QFAVDDY=
 github.com/oekit/concurrency v0.3.1/go.mod h1:x6fIjMPnTvbHQRXEXvoz9fxh4CfSSxJwGZyJoIGr4II=
-github.com/oekit/core v0.5.0 h1:Y69CwxX3dD4rK6b8A5CrXf5g+V03ICK8er8n5E0NqBQ=
-github.com/oekit/core v0.5.0/go.mod h1:JKLJ8YHFm4kmc/BGlAswyHhgU8SE1Gd3SGjznJXPWns=
-github.com/oekit/logx v0.2.0 h1:DwSw3zqWELpdKBorQie/J9Fvcs8+rVXj1zjCz8rXbco=
-github.com/oekit/logx v0.2.0/go.mod h1:gvkjNJi5LAN1yA0wc771p/29zi607GxPnTkLQWjHDaQ=
+github.com/oekit/core v0.6.0 h1:3D0r8ff/nOi6/4cc65gxgIDnAznh1XRFzD3QEUOaRWU=
+github.com/oekit/core v0.6.0/go.mod h1:HhBTwYHU5MUp9tfNvHjfZv6P4yglQmn4jKmz98dUIsM=
 github.com/oekit/pkg v0.3.0 h1:iS7La9urYEGarb8mSk+U71mFlSVXzHhRok7jxxd68J4=
 github.com/oekit/pkg v0.3.0/go.mod h1:Yh612jw/kb3vwePNZnVNxGQIo7lV83DhfntFdvNt5jM=
 github.com/pelletier/go-toml/v2 v2.3.1 h1:MYEvvGnQjeNkRF1qUuGolNtNExTDwct51yp7olPtrEc=
