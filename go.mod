@@ -6,7 +6,7 @@ toolchain go1.26.9
 
 require (
 	github.com/oekit/core v0.9.0
-	github.com/pigeonbox/core v0.25.0
+	github.com/pigeonbox/core v0.26.0
 	go.uber.org/zap v1.27.0
 )
 
