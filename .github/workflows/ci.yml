@@ -19,6 +19,11 @@ jobs:
         run: |
           go build ./...
           go vet ./...
+      # gofmt 门禁（2026-10-22 补）：四个 Go 仓此前都没有 gofmt 步，
+      # .golangci.yml 也没开 gofmt linter —— 格式漂移无人拦。发现即红，
+      # 修法是 gofmt -w，不设豁免。
+      - name: Gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - name: Test
         run: go test -race ./...
 
