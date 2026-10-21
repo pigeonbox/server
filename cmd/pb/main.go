@@ -19,7 +19,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -29,6 +31,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/oekit/pkg/cli"
 )
 
 var (
@@ -36,45 +40,63 @@ var (
 	apiKey    string
 )
 
+// stdout/stderr 走可注入 writer：命令分发层（oekit/pkg/cli）要求输出流由宿主
+// 给出，命令实现才能被单元测试直接调用（不必起子进程、不必捕获 os.Stdout）。
+// 进程入口把它们绑到真实标准流。
+var (
+	stdout io.Writer = os.Stdout
+	stderr io.Writer = os.Stderr
+)
+
 func main() {
 	serverURL = strings.TrimRight(envOr("PB_SERVER", "http://localhost:12345"), "/")
 	apiKey = os.Getenv("PB_API_KEY")
+	os.Exit(app().Run(context.Background(), os.Args[1:], stdout, stderr))
+}
 
-	args := os.Args[1:]
-	if len(args) == 0 {
-		usage()
-		os.Exit(2)
+// app 组装命令表。退出码语义由 oekit/pkg/cli 统一（0 成功 / 1 运行失败 /
+// 2 用法错误），与旧的手写 switch 一致。
+func app() *cli.App {
+	run := func(fn func([]string) error) func(context.Context, []string, io.Writer, io.Writer) int {
+		return func(_ context.Context, args []string, out, errOut io.Writer) int {
+			// 命令实现内的输出走包级 stdout/stderr，绑定到本次调用的流——
+			// 单测传入 buffer 即可断言输出，不必捕获进程级 stdout。
+			oldOut, oldErr := stdout, stderr
+			stdout, stderr = out, errOut
+			defer func() { stdout, stderr = oldOut, oldErr }()
+
+			err := fn(args)
+			if err == nil {
+				return cli.ExitOK
+			}
+			fmt.Fprintf(errOut, "错误: %v\n", err)
+			// 用法错误(2)与运行失败(1)分级：脚本可据此区分「命令写错了」与「服务端拒绝了」
+			var ue *usageErr
+			if errors.As(err, &ue) {
+				return cli.ExitUsage
+			}
+			return cli.ExitError
+		}
 	}
-	cmd, rest := args[0], args[1:]
-	var err error
-	switch cmd {
-	case "put":
-		err = cmdPut(rest)
-	case "import":
-		err = cmdImport(rest)
-	case "ls":
-		err = cmdList()
-	case "url":
-		err = cmdURL(rest)
-	case "p2p":
-		p2pCmd(rest)
-	case "rm":
-		err = cmdDelete(rest)
-	case "help", "-h", "--help":
-		usage()
-	default:
-		fmt.Fprintf(os.Stderr, "未知命令: %s\n\n", cmd)
-		usage()
-		os.Exit(2)
-	}
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
-		os.Exit(1)
+	return &cli.App{
+		Name: "pb",
+		Commands: []cli.Command{
+			{Name: "put", Summary: "上传文件（多文件合并为一个分享）", Run: run(cmdPut)},
+			{Name: "import", Summary: "服务器本地文件导入（免上传，NAS 场景）", Run: run(cmdImport)},
+			{Name: "ls", Summary: "我的分享列表", Run: run(func([]string) error { return cmdList() })},
+			{Name: "url", Summary: "取分享链接与下载直链", Run: run(cmdURL)},
+			{Name: "rm", Summary: "删除分享", Run: run(cmdDelete)},
+			{Name: "p2p", Summary: "设备直传（直传状态/设备/任务/邀请/推送）", Run: run(p2pCmd)},
+			{Name: "help", Summary: "显示用法", Run: func(_ context.Context, _ []string, out, _ io.Writer) int {
+				usage(out)
+				return cli.ExitOK
+			}},
+		},
 	}
 }
 
-func usage() {
-	fmt.Print(`pb —— PigeonBox CLI
+func usage(w io.Writer) {
+	fmt.Fprint(w, `pb —— PigeonBox CLI
 
 环境变量:
   PB_SERVER   服务地址（默认 http://localhost:12345）
@@ -89,7 +111,8 @@ func usage() {
   import [flags] <path>   服务器本地文件导入（免上传，NAS 场景）
     -e / -p / -c 同 put
   ls                      我的分享列表
-  url <code>              取分享链接与下载直链（直链含短时效令牌，随取随用勿缓存）
+  url [-p <password>] <code>   取分享链接与下载直链（直链含短时效令牌，随取随用勿缓存）
+                           -p 取件密码（经 X-Share-Password 头传，不入 URL）
   rm <code>               删除分享
 
 设备直传(admin API Key;2026-10-14):
@@ -107,10 +130,9 @@ func usage() {
 
 // ===== p2p 设备直传(2026-10-14;admin 用户的 API Key,服务端 AdminOrAdminKey 复核角色) =====
 
-func p2pCmd(args []string) {
+func p2pCmd(args []string) error {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "✗ 缺少 p2p 子命令(status/peers/tasks/send/recv/cancel/invites/accept/push)")
-		os.Exit(2)
+		return errUsage("缺少 p2p 子命令(status/peers/tasks/send/recv/cancel/invites/accept/push)")
 	}
 	sub, rest := args[0], args[1:]
 	var err error
@@ -145,14 +167,12 @@ func p2pCmd(args []string) {
 			}
 		}
 		if len(paths) == 0 {
-			fmt.Fprintln(os.Stderr, "✗ p2p send 需要至少一个服务器路径")
-			os.Exit(2)
+			return errUsage("p2p send 需要至少一个服务器路径")
 		}
 		body := map[string]any{"paths": paths}
 		if inviteTo != "" {
 			if len(inviteTo) != 64 {
-				fmt.Fprintln(os.Stderr, "✗ --invite-to 须为 64 位 node_id hex（pb p2p peers 查询名录）")
-				os.Exit(2)
+				return errUsage("--invite-to 须为 64 位 node_id hex（pb p2p peers 查询名录）")
 			}
 			body["invite_to"] = inviteTo
 			if inviteNote != "" {
@@ -162,40 +182,39 @@ func p2pCmd(args []string) {
 		err = p2pPost("/admin/p2p/send", body)
 	case "recv":
 		if len(rest) == 0 {
-			fmt.Fprintln(os.Stderr, "✗ p2p recv 需要口令")
-			os.Exit(2)
+			return errUsage("p2p recv 需要口令")
 		}
 		err = p2pPost("/admin/p2p/recv", map[string]any{"code": rest[0]})
 	case "cancel":
 		if len(rest) == 0 {
-			fmt.Fprintln(os.Stderr, "✗ p2p cancel 需要 task_id")
-			os.Exit(2)
+			return errUsage("p2p cancel 需要 task_id")
 		}
 		err = p2pPost("/admin/p2p/cancel", map[string]any{"task_id": rest[0]})
 	case "accept":
 		if len(rest) == 0 {
-			fmt.Fprintln(os.Stderr, "✗ p2p accept 需要 invite_id")
-			os.Exit(2)
+			return errUsage("p2p accept 需要 invite_id")
 		}
 		err = p2pPost("/admin/p2p/invites/accept", map[string]any{"invite_id": rest[0]})
 	case "push":
 		if len(rest) < 2 {
-			fmt.Fprintln(os.Stderr, "✗ p2p push 需要 <目标实例地址> <口令> [附言]")
-			os.Exit(2)
+			return errUsage("p2p push 需要 <目标实例地址> <口令> [附言]")
 		}
 		err = p2pPost("/admin/p2p/invite-push", map[string]any{
 			"target_url": rest[0], "code": rest[1],
 			"note": strings.Join(rest[2:], " "), "from_name": "",
 		})
 	default:
-		fmt.Fprintf(os.Stderr, "✗ 未知 p2p 子命令: %s\n", sub)
-		os.Exit(2)
+		return errUsage("未知 p2p 子命令: " + sub)
 	}
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "✗ %v\n", err)
-		os.Exit(1)
-	}
+	return err
 }
+
+// errUsage 用法错误：退出码 2（与运行失败 1 分级）。
+type usageErr struct{ msg string }
+
+func (e *usageErr) Error() string { return e.msg }
+
+func errUsage(msg string) error { return &usageErr{msg: msg} }
 
 func p2pGet(path string) error {
 	ar, err := doReq("GET", path, nil, "")
@@ -216,15 +235,15 @@ func p2pPost(path string, payload map[string]any) error {
 
 func prettyPrint(raw json.RawMessage) error {
 	if len(raw) == 0 {
-		fmt.Println("ok")
+		fmt.Fprintln(stdout, "ok")
 		return nil
 	}
 	var buf bytes.Buffer
 	if err := json.Indent(&buf, raw, "", "  "); err != nil {
-		fmt.Println(string(raw))
+		fmt.Fprintln(stdout, string(raw))
 		return nil
 	}
-	fmt.Println(buf.String())
+	fmt.Fprintln(stdout, buf.String())
 	return nil
 }
 
@@ -275,6 +294,12 @@ type apiResp struct {
 }
 
 func doReq(method, path string, body io.Reader, contentType string) (*apiResp, error) {
+	return doReqWithHeaders(method, path, body, contentType, nil)
+}
+
+// doReqWithHeaders 发请求（可带附加头）。取件密码经 X-Share-Password 头
+// 传递（2026-10-16 拍板）：query 形态有访问日志/浏览器历史/Referer 泄漏面。
+func doReqWithHeaders(method, path string, body io.Reader, contentType string, headers map[string]string) (*apiResp, error) {
 	if apiKey == "" {
 		return nil, fmt.Errorf("未设置 PB_API_KEY（用户中心 → API 令牌 创建）")
 	}
@@ -285,6 +310,9 @@ func doReq(method, path string, body io.Reader, contentType string) (*apiResp, e
 	req.Header.Set("X-API-Key", apiKey)
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 	client := &http.Client{Timeout: 30 * time.Minute}
 	resp, err := client.Do(req)
@@ -512,25 +540,31 @@ func cmdList() error {
 	if err := json.Unmarshal(ar.Data, &data); err != nil {
 		return err
 	}
-	fmt.Printf("共 %d 条分享：\n", data.Total)
+	fmt.Fprintf(stdout, "共 %d 条分享：\n", data.Total)
 	for _, it := range data.Items {
 		name := it.FileName
 		if name == "" {
 			name = it.Text
 		}
-		fmt.Printf("  %-10s %8d 次取件  %10d B  %s\n", it.Code, it.Used, it.Size, truncate(name, 48))
+		fmt.Fprintf(stdout, "  %-10s %8d 次取件  %10d B  %s\n", it.Code, it.Used, it.Size, truncate(name, 48))
 	}
 	return nil
 }
 
 func cmdURL(args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("用法: pb url <code>")
+	// pb url [-p <password>] <code>
+	// 密码保护分享的取件密码经 X-Share-Password 头传（与网页/前端同口径）。
+	password, code, err := parseURLArgs(args)
+	if err != nil {
+		return err
 	}
-	code := args[0]
-	fmt.Printf("%s/#/share/%s\n", serverURL, code)
+	fmt.Fprintf(stdout, "%s/#/share/%s\n", serverURL, code)
 	// 直链经 /share/select/ 取签名 download_url（旧版直接拼 code 的 URL 缺下载令牌必 401）
-	ar, err := doReq("GET", "/share/select/?code="+url.QueryEscape(code), nil, "")
+	var headers map[string]string
+	if password != "" {
+		headers = map[string]string{"X-Share-Password": password}
+	}
+	ar, err := doReqWithHeaders("GET", "/share/select/?code="+url.QueryEscape(code), nil, "", headers)
 	if err != nil {
 		return err
 	}
@@ -542,22 +576,42 @@ func cmdURL(args []string) error {
 		return fmt.Errorf("响应解析失败: %w", err)
 	}
 	if d.DownloadURL == "" {
-		fmt.Println("(文本/受保护分享无匿名直链，取件见上方链接)")
+		fmt.Fprintln(stdout, "(文本/受保护分享无匿名直链，取件见上方链接)")
 		return nil
 	}
-	fmt.Printf("直链（令牌短时效，随取随用勿缓存）: %s%s\n", serverURL, d.DownloadURL)
+	fmt.Fprintf(stdout, "直链（令牌短时效，随取随用勿缓存）: %s%s\n", serverURL, d.DownloadURL)
 	return nil
+}
+
+// parseURLArgs 解析 pb url 的参数：[-p <password>] <code>。
+func parseURLArgs(args []string) (password, code string, err error) {
+	rest := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		switch {
+		case (args[i] == "-p" || args[i] == "--password") && i+1 < len(args):
+			i++
+			password = args[i]
+		case strings.HasPrefix(args[i], "--password="):
+			password = strings.SplitN(args[i], "=", 2)[1]
+		default:
+			rest = append(rest, args[i])
+		}
+	}
+	if len(rest) != 1 {
+		return "", "", errUsage("用法: pb url [-p <password>] <code>")
+	}
+	return password, rest[0], nil
 }
 
 func cmdDelete(args []string) error {
 	if len(args) != 1 {
-		return fmt.Errorf("用法: pb rm <code>")
+		return errUsage("用法: pb rm <code>")
 	}
 	_, err := doReq("DELETE", "/api/v1/user/shares/"+args[0]+"/hard", nil, "")
 	if err != nil {
 		return err
 	}
-	fmt.Println("已删除")
+	fmt.Fprintln(stdout, "已删除")
 	return nil
 }
 
@@ -573,11 +627,11 @@ func printShare(data json.RawMessage) error {
 		return err
 	}
 	if d.PickupCode != "" {
-		fmt.Printf("取件码（6 位）: %s\n", d.PickupCode)
+		fmt.Fprintf(stdout, "取件码（6 位）: %s\n", d.PickupCode)
 	}
-	fmt.Printf("分享码: %s\n分享链接: %s/#/share/%s\n", d.Code, serverURL, d.Code)
+	fmt.Fprintf(stdout, "分享码: %s\n分享链接: %s/#/share/%s\n", d.Code, serverURL, d.Code)
 	if d.URL != "" {
-		fmt.Printf("服务端链接: %s\n", d.URL)
+		fmt.Fprintf(stdout, "服务端链接: %s\n", d.URL)
 	}
 	return nil
 }
