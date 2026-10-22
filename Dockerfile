@@ -34,6 +34,11 @@ RUN apk --no-cache add ca-certificates tzdata wget && \
     mkdir -p /app/data /app/static /app/config && \
     chown -R app:app /app
 COPY --from=go-builder /out/server ./server
+# 入口脚本(2026-10-22):把「首启便利逻辑」下沉到镜像层,让 compose / docker run
+# / k8s 三种起法行为一致(此前只在 compose 的 entrypoint 里有,直跑镜像会撞
+# "refusing to create default admin" 的墙)。详见 docker-entrypoint.sh 头注释。
+COPY server/docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod 0755 /app/docker-entrypoint.sh
 # OpenAPI 规范由 core 运行时生成(/openapi.json,openapi_gen.go),无快照文件。
 # ./static 保留空目录:core 默认 StaticDir 指向它,缺失时仅 SPA 路径 404(优雅降级)。
 COPY server/configs ./config/
@@ -43,4 +48,5 @@ ENV TZ=Asia/Shanghai
 # wget --spider 发 HEAD,/live 未注册 HEAD 会 404 导致健康检查永不通过,须显式 GET
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD wget -q -O /dev/null http://localhost:12345/live || exit 1
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["./server", "--config", "./config/config.yaml"]
