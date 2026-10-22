@@ -25,6 +25,13 @@ func TestAppDispatchExitCodes(t *testing.T) {
 		{"help", []string{"help"}, cli.ExitOK},
 		{"p2p 缺子命令", []string{"p2p"}, cli.ExitUsage},
 		{"p2p 未知子命令", []string{"p2p", "nope"}, cli.ExitUsage},
+		// Wave B'(2026-10-22):设备直传拆为独立应用 PigeonBeam,直传五支子命令
+		// 必须已摘除——仍能派发=拆分未收口。
+		{"p2p status 已摘除", []string{"p2p", "status"}, cli.ExitUsage},
+		{"p2p tasks 已摘除", []string{"p2p", "tasks"}, cli.ExitUsage},
+		{"p2p send 已摘除", []string{"p2p", "send", "/tmp/x"}, cli.ExitUsage},
+		{"p2p recv 已摘除", []string{"p2p", "recv", "CODE"}, cli.ExitUsage},
+		{"p2p cancel 已摘除", []string{"p2p", "cancel", "task-id"}, cli.ExitUsage},
 		{"url 缺 code", []string{"url"}, cli.ExitUsage},
 		{"url 多余参数", []string{"url", "a", "b"}, cli.ExitUsage},
 		{"rm 缺 code", []string{"rm"}, cli.ExitUsage},
@@ -37,6 +44,27 @@ func TestAppDispatchExitCodes(t *testing.T) {
 				t.Errorf("退出码 = %d, 期望 %d (stderr: %s)", got, c.want, errOut.String())
 			}
 		})
+	}
+}
+
+// Wave B'(2026-10-22):设备直传拆为独立应用 PigeonBeam(信鸽直传)——pb CLI 只剩
+// 联邦四支子命令。help 里再出现直传子命令=拆分未收口(用户会照着敲一个必然
+// 报错的命令),故对 help 文案本身设门禁。
+func TestP2PCLIOnlyFederation(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := app().Run(context.Background(), []string{"help"}, &out, &errOut); code != cli.ExitOK {
+		t.Fatalf("退出码 = %d, 期望 0 (stderr: %s)", code, errOut.String())
+	}
+	help := out.String()
+	for _, gone := range []string{"p2p status", "p2p tasks", "p2p send", "p2p recv", "p2p cancel"} {
+		if strings.Contains(help, gone) {
+			t.Errorf("help 仍列已摘除的直传子命令 %q", gone)
+		}
+	}
+	for _, keep := range []string{"p2p peers", "p2p invites", "p2p accept", "p2p push"} {
+		if !strings.Contains(help, keep) {
+			t.Errorf("help 缺联邦子命令 %q", keep)
+		}
 	}
 }
 

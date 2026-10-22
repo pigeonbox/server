@@ -25,10 +25,9 @@ PigeonBox 独立部署应用:**纯后端**薄壳入口(main.go)+ 配置模板 + 
 
 ```
 ├── cmd/server/main.go   # 信号处理 + bootstrap.Bootstrap() 拉起 core
-├── cmd/pb/             # 官方 CLI 客户端(文本/文件分享、本地导入、我的分享管理、p2p 设备直传;API Key 认证)
+├── cmd/pb/             # 官方 CLI 客户端(文本/文件分享、本地导入、我的分享管理、p2p 联邦;API Key 认证)
 ├── configs/             # config.yaml / config.example.yaml / config.prod.yaml
 ├── Dockerfile           # 两阶段:go-builder → runtime(Go 依赖经 module proxy 拉正式版本)
-├── .p2pc-version        # 随包 p2pc(设备直传)版本真相源(发布列车管理,勿手改)
 └── Makefile
 ```
 
@@ -57,23 +56,21 @@ docker build -f server/Dockerfile -t pigeonbox-server ..   # 在 server/ 内执�
 # 或 make docker-build
 ```
 
-## 随包 p2pc(设备直传)
+## 设备直传已独立为 PigeonBeam(信鸽直传)
 
-Dockerfile 构建参数 `P2PC_VERSION` 按 TARGETARCH 从
-[p2p Releases](https://github.com/pigeonbox/p2p/releases) 拉取 `p2pc-<triple>`
-二进制(附 sha256 校验)装入镜像 `/app/p2pc`;版本真相源为本仓 `.p2pc-version`
-(发布列车管理)。`P2PC_VERSION` 缺省为空时跳过安装,镜像优雅降级(设备直传
-不可用,其余功能不受影响)。
+设备直传(p2pc)已拆为独立应用 **PigeonBeam(信鸽直传)**,本仓**不再随包 p2pc
+二进制、不再编排设备直传**——镜像里没有 `/app/p2pc`,`pb` CLI 也没有直传子命令。
+设备直传请使用 PigeonBeam 客户端。
 
-运行期由 core `p2px` 域服务调度(spawn `/app/p2pc` 子进程做数据面),**仅
-standalone 部署模式可用**;管理入口在 admin「系统配置 → P2P」分区的 direct
-子段(启用开关/收文件目录/白名单发送根/配额/二进制路径),操作台为独立的
-「设备直传」页(含联邦推送邀请面板:待收/认领/推送)。
+本仓 CLI 只保留**联邦**四支子命令(走 admin API Key 通道,服务端 AdminOrAdminKey
+复核 admin 角色):
 
-官方 CLI `pb` 覆盖直传管理面:`pb p2p` 八支子命令(status/tasks/send/recv/
-cancel/invites/accept/push),走 admin API Key 通道(服务端 AdminOrAdminKey
-复核 admin 角色);联邦实例间推送邀请经 `pb p2p push <目标地址> <口令> [附言]`
-或 Web 控制台「设备直传」页操作。
+```
+pb p2p peers               在线设备名录(node_id 用于定向邀请)
+pb p2p invites             待收邀请列表
+pb p2p accept <invite_id>  认领邀请并接收
+pb p2p push <目标地址> <口令> [附言]   推送口令到另一实例(免口令交接)
+```
 
 ## 与 fnos 的关系
 

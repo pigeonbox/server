@@ -86,7 +86,7 @@ func app() *cli.App {
 			{Name: "ls", Summary: "我的分享列表", Run: run(func([]string) error { return cmdList() })},
 			{Name: "url", Summary: "取分享链接与下载直链", Run: run(cmdURL)},
 			{Name: "rm", Summary: "删除分享", Run: run(cmdDelete)},
-			{Name: "p2p", Summary: "设备直传（直传状态/设备/任务/邀请/推送）", Run: run(p2pCmd)},
+			{Name: "p2p", Summary: "联邦（设备名录/待收邀请/推送）", Run: run(p2pCmd)},
 			{Name: "help", Summary: "显示用法", Run: func(_ context.Context, _ []string, out, _ io.Writer) int {
 				usage(out)
 				return cli.ExitOK
@@ -115,81 +115,32 @@ func usage(w io.Writer) {
                            -p 取件密码（经 X-Share-Password 头传，不入 URL）
   rm <code>               删除分享
 
-设备直传(admin API Key;2026-10-14):
-  p2p status              直传状态(启用/p2pc/注册中心/收件区)
+联邦(admin API Key;2026-10-14):
   p2p peers               在线设备名录(node_id 用于定向邀请)
-  p2p tasks               直传任务列表
-  p2p send <path...>      发起发送(服务器路径,须在白名单内)→ 输出口令
-  p2p recv <口令>          凭口令接收(落收件暂存区)
-  p2p cancel <task_id>    取消任务
   p2p invites             待收邀请列表
   p2p accept <invite_id>  认领邀请并接收
   p2p push <目标地址> <口令> [附言]   推送口令到另一实例(免口令交接)
+
+设备直传已独立为 PigeonBeam(信鸽直传)应用——本 CLI 不再提供直传子命令。
 `)
 }
 
-// ===== p2p 设备直传(2026-10-14;admin 用户的 API Key,服务端 AdminOrAdminKey 复核角色) =====
+// ===== p2p 联邦(2026-10-14;admin 用户的 API Key,服务端 AdminOrAdminKey 复核角色) =====
+//
+// 设备直传已拆为独立应用 PigeonBeam(信鸽直传):本 CLI 只保留联邦面
+// (设备名录/待收邀请/认领/推送),直传子命令(status/tasks/send/recv/cancel)已移除。
 
 func p2pCmd(args []string) error {
 	if len(args) == 0 {
-		return errUsage("缺少 p2p 子命令(status/peers/tasks/send/recv/cancel/invites/accept/push)")
+		return errUsage("缺少 p2p 子命令(peers/invites/accept/push)")
 	}
 	sub, rest := args[0], args[1:]
 	var err error
 	switch sub {
-	case "status":
-		err = p2pGet("/admin/p2p/status")
 	case "peers":
 		err = p2pGet("/admin/p2p/directory")
-	case "tasks":
-		err = p2pGet("/admin/p2p/tasks")
 	case "invites":
 		err = p2pGet("/admin/p2p/invites")
-	case "send":
-		// 位置无关解析:--invite-to/--invite-note 旗标 + 其余为发送路径
-		// (2026-10-15 名录邀请接线;路径仍须命中 send_roots 白名单)
-		var inviteTo, inviteNote string
-		var paths []string
-		for i := 0; i < len(rest); i++ {
-			switch {
-			case (rest[i] == "--invite-to" || rest[i] == "-invite-to") && i+1 < len(rest):
-				i++
-				inviteTo = strings.ToLower(strings.TrimSpace(rest[i]))
-			case strings.HasPrefix(rest[i], "--invite-to="), strings.HasPrefix(rest[i], "-invite-to="):
-				inviteTo = strings.ToLower(strings.TrimSpace(strings.SplitN(rest[i], "=", 2)[1]))
-			case (rest[i] == "--invite-note" || rest[i] == "-invite-note") && i+1 < len(rest):
-				i++
-				inviteNote = rest[i]
-			case strings.HasPrefix(rest[i], "--invite-note="), strings.HasPrefix(rest[i], "-invite-note="):
-				inviteNote = strings.SplitN(rest[i], "=", 2)[1]
-			default:
-				paths = append(paths, rest[i])
-			}
-		}
-		if len(paths) == 0 {
-			return errUsage("p2p send 需要至少一个服务器路径")
-		}
-		body := map[string]any{"paths": paths}
-		if inviteTo != "" {
-			if len(inviteTo) != 64 {
-				return errUsage("--invite-to 须为 64 位 node_id hex（pb p2p peers 查询名录）")
-			}
-			body["invite_to"] = inviteTo
-			if inviteNote != "" {
-				body["invite_note"] = inviteNote
-			}
-		}
-		err = p2pPost("/admin/p2p/send", body)
-	case "recv":
-		if len(rest) == 0 {
-			return errUsage("p2p recv 需要口令")
-		}
-		err = p2pPost("/admin/p2p/recv", map[string]any{"code": rest[0]})
-	case "cancel":
-		if len(rest) == 0 {
-			return errUsage("p2p cancel 需要 task_id")
-		}
-		err = p2pPost("/admin/p2p/cancel", map[string]any{"task_id": rest[0]})
 	case "accept":
 		if len(rest) == 0 {
 			return errUsage("p2p accept 需要 invite_id")

@@ -27,7 +27,7 @@ database:
   password: ""             # env: PB_DATABASE_PASSWORD / DATABASE_PASS  ⚠️ 生产请用 env 注入
 
 # Redis（可选）：多副本部署必配（配置广播与跨实例状态共享依赖）；
-# 单机置空 host 进入内存模式——匿名取件/直传会话存进程内 TTL KV，
+# 单机置空 host 进入内存模式——匿名取件会话存进程内 TTL KV，
 # 全功能可用（重启丢失、不跨副本共享；需要重启不丢取件码请配 Redis+AOF）
 redis:
   host: "localhost"        # env: PB_REDIS_HOST / REDIS_HOST；置空 = 单机内存模式
