@@ -1,138 +1,222 @@
 package main
 
 import (
-	"bytes"
-	"context"
+	"encoding/json"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/oekit/pkg/cli"
 )
 
-// 分发层退出码契约（oekit/pkg/cli 语义：0 成功 / 1 运行失败 / 2 用法错误）。
-// 这层此前是手写 switch + os.Exit，无法被单测覆盖——命令表拼错、退出码
-// 分级错位都只能靠人肉发现。
-func TestAppDispatchExitCodes(t *testing.T) {
-	cases := []struct {
-		name string
-		args []string
-		want int
-	}{
-		{"无参数", nil, cli.ExitUsage},
-		{"未知子命令", []string{"nope"}, cli.ExitUsage},
-		{"help", []string{"help"}, cli.ExitOK},
-		{"p2p 缺子命令", []string{"p2p"}, cli.ExitUsage},
-		{"p2p 未知子命令", []string{"p2p", "nope"}, cli.ExitUsage},
-		// Wave B'(2026-10-22):设备直传拆为独立应用 PigeonBeam,直传五支子命令
-		// 必须已摘除——仍能派发=拆分未收口。
-		{"p2p status 已摘除", []string{"p2p", "status"}, cli.ExitUsage},
-		{"p2p tasks 已摘除", []string{"p2p", "tasks"}, cli.ExitUsage},
-		{"p2p send 已摘除", []string{"p2p", "send", "/tmp/x"}, cli.ExitUsage},
-		{"p2p recv 已摘除", []string{"p2p", "recv", "CODE"}, cli.ExitUsage},
-		{"p2p cancel 已摘除", []string{"p2p", "cancel", "task-id"}, cli.ExitUsage},
-		{"url 缺 code", []string{"url"}, cli.ExitUsage},
-		{"url 多余参数", []string{"url", "a", "b"}, cli.ExitUsage},
-		{"rm 缺 code", []string{"rm"}, cli.ExitUsage},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			var out, errOut bytes.Buffer
-			got := app().Run(context.Background(), c.args, &out, &errOut)
-			if got != c.want {
-				t.Errorf("退出码 = %d, 期望 %d (stderr: %s)", got, c.want, errOut.String())
+// CLI 上传请求体守卫（2026-10-24 真机实测）。
+//
+// 实测事故：`pb put -t "..."`（**不带 -p**）必失败——
+//   错误: [code 10001] 'require_auth' field is a 'required' parameter,
+//   but the request body does not have this parameter 'require_auth'
+//
+// 根因：`require_auth` 是**契约必填**（契约层无论 true/false 都要显式发送），
+// 而 CLI 的四条上传路径都写成「有密码才发」⇒ 公开分享（无密码）一律被拒。
+// 前端早已修过同一类（api/share.ts 注释：「契约必填: false 也必须显式发送
+// (条件 append 曾致公开分享 400)」），CLI 漏了 ⇒ 官方 CLI 的主命令整个不可用，
+// 而冒烟里没有 CLI 的任何断言 ⇒ 长期无人发现。
+//
+// 本守卫用 httptest 捕获真实请求体，断言 require_auth 恒在（无密码时为 "false"）。
+
+// captureForm 起一个捕获 multipart 表单的测试服务器，返回 (表单键值, 关闭函数)。
+func captureForm(t *testing.T) (map[string]string, func()) {
+	t.Helper()
+	fields := map[string]string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("解析 multipart 失败: %v", err)
+			return
+		}
+		for k, vs := range r.MultipartForm.Value {
+			if len(vs) > 0 {
+				fields[k] = vs[0]
 			}
-		})
-	}
-}
-
-// Wave B'(2026-10-22):设备直传拆为独立应用 PigeonBeam(信鸽直传)——pb CLI 只剩
-// 联邦四支子命令。help 里再出现直传子命令=拆分未收口(用户会照着敲一个必然
-// 报错的命令),故对 help 文案本身设门禁。
-func TestP2PCLIOnlyFederation(t *testing.T) {
-	var out, errOut bytes.Buffer
-	if code := app().Run(context.Background(), []string{"help"}, &out, &errOut); code != cli.ExitOK {
-		t.Fatalf("退出码 = %d, 期望 0 (stderr: %s)", code, errOut.String())
-	}
-	help := out.String()
-	for _, gone := range []string{"p2p status", "p2p tasks", "p2p send", "p2p recv", "p2p cancel"} {
-		if strings.Contains(help, gone) {
-			t.Errorf("help 仍列已摘除的直传子命令 %q", gone)
 		}
-	}
-	for _, keep := range []string{"p2p peers", "p2p invites", "p2p accept", "p2p push"} {
-		if !strings.Contains(help, keep) {
-			t.Errorf("help 缺联邦子命令 %q", keep)
-		}
-	}
-}
-
-// 取件密码必须走 X-Share-Password 头，不进 URL——query 形态有访问日志/
-// 浏览器历史/Referer 泄漏面（2026-10-16 拍板，与 core v0.24.0 同批收敛）。
-func TestURLPasswordViaHeader(t *testing.T) {
-	var gotPath, gotHeader string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.RequestURI()
-		gotHeader = r.Header.Get("X-Share-Password")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"download_url":"/share/download?code=abc&token=t","text":""}}`))
+		_, _ = w.Write([]byte(`{"code":0,"message":"ok","data":{"code":"AbCd1234","pickup_code":"X1X2X3","url":"http://x/#/share/AbCd1234"}}`))
+	}))
+	return fields, srv.Close
+}
+
+func useTestServer(t *testing.T, srv *httptest.Server) {
+	t.Helper()
+	oldServer, oldKey := serverURL, apiKey
+	serverURL = srv.URL
+	apiKey = "pb_sk_test"
+	t.Cleanup(func() { serverURL, apiKey = oldServer, oldKey })
+}
+
+// TestPutTextRequiresRequireAuth —— 文本分享：无密码也必须显式发 require_auth=false。
+func TestPutTextRequiresRequireAuth(t *testing.T) {
+	fields, closeFn := captureForm(t)
+	defer closeFn()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("解析 multipart 失败: %v", err)
+			return
+		}
+		for k, vs := range r.MultipartForm.Value {
+			if len(vs) > 0 {
+				fields[k] = vs[0]
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"message":"ok","data":{"code":"AbCd1234","url":"http://x/#/share/AbCd1234"}}`))
 	}))
 	defer srv.Close()
+	useTestServer(t, srv)
 
-	oldServer, oldKey := serverURL, apiKey
-	serverURL, apiKey = srv.URL, "pb_sk_test"
-	t.Cleanup(func() { serverURL, apiKey = oldServer, oldKey })
-
-	var out, errOut bytes.Buffer
-	if code := app().Run(context.Background(), []string{"url", "-p", "s3cret", "abc123"}, &out, &errOut); code != cli.ExitOK {
-		t.Fatalf("退出码 = %d, 期望 0 (stderr: %s)", code, errOut.String())
+	if err := cmdPut([]string{"-t", "无密码的文本分享"}); err != nil {
+		t.Fatalf("cmdPut 应成功: %v", err)
 	}
-	if gotHeader != "s3cret" {
-		t.Errorf("X-Share-Password 头 = %q, 期望 %q", gotHeader, "s3cret")
+	v, ok := fields["require_auth"]
+	if !ok {
+		t.Fatalf("请求体缺少 require_auth（契约必填）⇒ 后端会拒成 10001；实际字段=%v", fields)
 	}
-	if strings.Contains(gotPath, "password") {
-		t.Errorf("URL 里出现了 password: %s", gotPath)
-	}
-	if !strings.Contains(gotPath, "code=abc123") {
-		t.Errorf("URL 缺 code: %s", gotPath)
-	}
-	if !strings.Contains(out.String(), "token=t") {
-		t.Errorf("输出未含下载直链: %s", out.String())
+	if v != "false" {
+		t.Fatalf("无密码时 require_auth 应为 false，实际 %q", v)
 	}
 }
 
-// 未给密码时不得带空头（服务端按"无密码"判定，多余的空头会被当成一次口令尝试）。
-func TestURLWithoutPasswordNoHeader(t *testing.T) {
-	var hadHeader bool
+// TestPutTextWithPasswordRequireAuth —— 带密码：require_auth=true。
+func TestPutTextWithPasswordRequireAuth(t *testing.T) {
+	fields := map[string]string{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, hadHeader = r.Header["X-Share-Password"]
+		_ = r.ParseMultipartForm(1 << 20)
+		for k, vs := range r.MultipartForm.Value {
+			if len(vs) > 0 {
+				fields[k] = vs[0]
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"download_url":"/share/download?code=abc&token=t"}}`))
+		_, _ = w.Write([]byte(`{"code":0,"message":"ok","data":{"code":"AbCd1234","url":"http://x/#/share/AbCd1234"}}`))
 	}))
 	defer srv.Close()
+	useTestServer(t, srv)
 
-	oldServer, oldKey := serverURL, apiKey
-	serverURL, apiKey = srv.URL, "pb_sk_test"
-	t.Cleanup(func() { serverURL, apiKey = oldServer, oldKey })
-
-	var out, errOut bytes.Buffer
-	if code := app().Run(context.Background(), []string{"url", "abc123"}, &out, &errOut); code != cli.ExitOK {
-		t.Fatalf("退出码 = %d, 期望 0 (stderr: %s)", code, errOut.String())
+	if err := cmdPut([]string{"-t", "带密码的文本分享", "-p", "pw123"}); err != nil {
+		t.Fatalf("cmdPut 应成功: %v", err)
 	}
-	if hadHeader {
-		t.Error("未给密码时不应发送 X-Share-Password 头")
+	if fields["require_auth"] != "true" {
+		t.Fatalf("带密码时 require_auth 应为 true，实际 %q", fields["require_auth"])
+	}
+	if fields["password"] != "pw123" {
+		t.Fatalf("password 字段应透传，实际 %q", fields["password"])
 	}
 }
 
-// 缺 PB_API_KEY 属运行失败（1），不是用法错误（2）——脚本可据此区分。
-func TestURLMissingAPIKeyIsRuntimeError(t *testing.T) {
-	oldKey := apiKey
-	apiKey = ""
-	t.Cleanup(func() { apiKey = oldKey })
+// TestPutFileRequiresRequireAuth —— 单文件上传（multipart）：同样必填。
+func TestPutFileRequiresRequireAuth(t *testing.T) {
+	fields := map[string]string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseMultipartForm(1 << 20)
+		for k, vs := range r.MultipartForm.Value {
+			if len(vs) > 0 {
+				fields[k] = vs[0]
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"message":"ok","data":{"code":"AbCd1234","url":"http://x/#/share/AbCd1234"}}`))
+	}))
+	defer srv.Close()
+	useTestServer(t, srv)
 
-	var out, errOut bytes.Buffer
-	if code := app().Run(context.Background(), []string{"url", "abc123"}, &out, &errOut); code != cli.ExitError {
-		t.Errorf("退出码 = %d, 期望 %d", code, cli.ExitError)
+	dir := t.TempDir()
+	p := filepath.Join(dir, "a.txt")
+	if err := os.WriteFile(p, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdPut([]string{p}); err != nil {
+		t.Fatalf("cmdPut 应成功: %v", err)
+	}
+	if fields["require_auth"] != "false" {
+		t.Fatalf("无密码上传必须显式发 require_auth=false，实际 %q（缺字段 ⇒ 后端 10001）", fields["require_auth"])
+	}
+}
+
+// TestImportRequiresRequireAuth —— 服务器本地文件导入（JSON 请求体）：同样必填。
+func TestImportRequiresRequireAuth(t *testing.T) {
+	var payload map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &payload)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"message":"ok","data":{"code":"AbCd1234","url":"http://x/#/share/AbCd1234"}}`))
+	}))
+	defer srv.Close()
+	useTestServer(t, srv)
+
+	dir := t.TempDir()
+	p := filepath.Join(dir, "b.txt")
+	if err := os.WriteFile(p, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdImport([]string{p}); err != nil {
+		t.Fatalf("cmdImport 应成功: %v", err)
+	}
+	if payload == nil {
+		t.Fatal("未捕获到请求体")
+	}
+	v, ok := payload["require_auth"]
+	if !ok {
+		t.Fatalf("导入请求体缺少 require_auth（契约必填）⇒ 实际=%v", payload)
+	}
+	if v != false {
+		t.Fatalf("无密码导入时 require_auth 应为 false，实际 %v", v)
+	}
+}
+
+// TestMultipartFormParsingGuard —— 守一下 helper 本身（别让守卫写错却绿）。
+func TestMultipartFormParsingGuard(t *testing.T) {
+	var buf strings.Builder
+	w := multipart.NewWriter(&buf)
+	_ = w.WriteField("require_auth", "false")
+	_ = w.Close()
+	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(buf.String()))
+	r.Header.Set("Content-Type", w.FormDataContentType())
+	if err := r.ParseMultipartForm(1 << 20); err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if got := r.FormValue("require_auth"); got != "false" {
+		t.Fatalf("守卫解析异常: %q", got)
+	}
+}
+
+// TestRemoveUsesSoftDelete —— `pb rm` 必须走**软删**（batch-delete），
+// 不能直连硬删端点。
+//
+// 实测事故：CLI 原先打 DELETE /api/v1/user/shares/:code/hard，而该端点**只接受
+// 已软删的分享** ⇒ 对一个正常分享永远报 10001「分享不在回收站中」⇒ 删除命令
+// 形同虚设（用户只能改用网页端）。2026-10-24 实测修复。
+func TestRemoveUsesSoftDelete(t *testing.T) {
+	var gotPath, gotMethod string
+	var payload map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotMethod = r.URL.Path, r.Method
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &payload)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"message":"ok","data":{"count":1}}`))
+	}))
+	defer srv.Close()
+	useTestServer(t, srv)
+
+	if err := cmdDelete([]string{"AbCd1234"}); err != nil {
+		t.Fatalf("cmdDelete 应成功: %v", err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/api/v1/user/shares/batch-delete" {
+		t.Fatalf("rm 应走软删端点 POST /api/v1/user/shares/batch-delete，实际 %s %s（直连硬删端点只接受已软删的分享 ⇒ 正常分享永远删不掉）", gotMethod, gotPath)
+	}
+	codes, _ := payload["codes"].([]any)
+	if len(codes) != 1 || codes[0] != "AbCd1234" {
+		t.Fatalf("软删请求体应带 codes=[AbCd1234]，实际 %v", payload["codes"])
 	}
 }

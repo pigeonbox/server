@@ -345,8 +345,9 @@ func cmdPut(args []string) error {
 		_ = writer.WriteField("text", f.text)
 		_ = writer.WriteField("expire_value", fmt.Sprint(expVal))
 		_ = writer.WriteField("expire_style", expStyle)
+		// require_auth 契约必填（false 也要显式发）——见下方同名注释。
+		_ = writer.WriteField("require_auth", boolStr(f.password != ""))
 		if f.password != "" {
-			_ = writer.WriteField("require_auth", "true")
 			_ = writer.WriteField("password", f.password)
 		}
 		if f.code != "" {
@@ -388,8 +389,10 @@ func cmdPut(args []string) error {
 	}
 	_ = writer.WriteField("expire_value", fmt.Sprint(expVal))
 	_ = writer.WriteField("expire_style", expStyle)
+	// require_auth 是**契约必填**（false 也必须显式发送）——条件省略 ⇒ 公开分享
+	// 直接被后端拒成 10001（前端早已修过同一类，2026-10-24 CLI 实测补齐）。
+	_ = writer.WriteField("require_auth", boolStr(f.password != ""))
 	if f.password != "" {
-		_ = writer.WriteField("require_auth", "true")
 		_ = writer.WriteField("password", f.password)
 	}
 	if f.code != "" {
@@ -421,8 +424,10 @@ func putDirect(path string, expVal int, expStyle string, f *putFlags) error {
 	}
 	_ = writer.WriteField("expire_value", fmt.Sprint(expVal))
 	_ = writer.WriteField("expire_style", expStyle)
+	// require_auth 是**契约必填**（false 也必须显式发送）——条件省略 ⇒ 公开分享
+	// 直接被后端拒成 10001（前端早已修过同一类，2026-10-24 CLI 实测补齐）。
+	_ = writer.WriteField("require_auth", boolStr(f.password != ""))
 	if f.password != "" {
-		_ = writer.WriteField("require_auth", "true")
 		_ = writer.WriteField("password", f.password)
 	}
 	if f.code != "" {
@@ -456,8 +461,9 @@ func cmdImport(args []string) error {
 		"expire_value": expVal,
 		"expire_style": expStyle,
 	}
+	// require_auth 契约必填（false 也要显式发）——同上。
+	payload["require_auth"] = f.password != ""
 	if f.password != "" {
-		payload["require_auth"] = true
 		payload["password"] = f.password
 	}
 	if f.code != "" {
@@ -558,11 +564,18 @@ func cmdDelete(args []string) error {
 	if len(args) != 1 {
 		return errUsage("用法: pb rm <code>")
 	}
-	_, err := doReq("DELETE", "/api/v1/user/shares/"+args[0]+"/hard", nil, "")
+	// 软删（进回收站，可在用户中心恢复）——**不能**直连硬删端点：
+	// DELETE /api/v1/user/shares/:code/hard 只接受**已软删**的分享
+	// （2026-10-24 实测：正常分享打硬删一律 10001「分享不在回收站中」⇒
+	//  CLI 的删除命令形同虚设）。
+	// 单条软删没有独立路由，走批量软删端点带一个 code（与前端同形状）。
+	b, _ := json.Marshal(map[string]any{"codes": []string{args[0]}})
+	ar, err := doReq("POST", "/api/v1/user/shares/batch-delete", bytes.NewReader(b), "application/json")
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(stdout, "已删除")
+	_ = ar
+	fmt.Fprintln(stdout, "已移入回收站（可在用户中心恢复）")
 	return nil
 }
 
@@ -585,6 +598,14 @@ func printShare(data json.RawMessage) error {
 		fmt.Fprintf(stdout, "服务端链接: %s\n", d.URL)
 	}
 	return nil
+}
+
+// boolStr 布尔 → 字符串（multipart 表单字段用；契约里 require_auth 是字符串型必填）。
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
 }
 
 func truncate(s string, n int) string {

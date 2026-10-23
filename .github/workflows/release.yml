@@ -136,6 +136,46 @@ jobs:
         # 不再 continue-on-error：权限修复后本步骤已被证明可用，再静默吞错只会
         # 重演 v0.12.6/v0.13.0 Release 页缺失数日无人知（2026-10-06 治理）
 
+      # ── 官方 CLI（cmd/pb）作为 Release 资产发布 ──
+      # 此前 CLI 只在源码里，release 只产镜像 ⇒ 「官方 CLI」对用户等于不存在；
+      # 而它又整体不可用（require_auth 契约必填被条件省略 ⇒ pb put 必失败），
+      # 两件事互相遮掩：没人分发 ⇒ 没人用 ⇒ 没人发现坏了。
+      # 这里把静态二进制发出来（linux/darwin/windows × amd64/arm64），
+      # 让 CLI 修复真正到达用户手里；门禁见 cmd/pb/main_test.go（httptest 捕请求体）。
+      - name: 构建官方 CLI 多平台二进制
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd "${{ github.workspace }}/ws/server"
+          # 用**默认** GOPROXY（不换 goproxy.cn 等镜像）：镜像缓存可能喂陈旧模块
+          # ⇒ 编出来的 CLI 与 pin 的 core 版本错配（AGENTS.md 记的「代理喂陈旧 zip」坑）。
+          go mod download
+          OUT="${{ github.workspace }}/cli"
+          mkdir -p "$OUT"
+          for spec in "linux amd64" "linux arm64" "darwin amd64" "darwin arm64" "windows amd64"; do
+            set -- $spec
+            os=$1; arch=$2
+            ext=""
+            [ "$os" = "windows" ] && ext=".exe"
+            name="pb_${os}_${arch}${ext}"
+            echo "  构建 $name"
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w" -o "$OUT/$name" ./cmd/pb
+          done
+          ls -la "$OUT"
+      - name: 上传 CLI 资产到 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for f in "${{ github.workspace }}/cli"/pb_*; do
+            [ -f "$f" ] || continue
+            if gh release view "${{ github.ref_name }}" -R ${{ github.repository }} >/dev/null 2>&1; then
+              gh release upload "${{ github.ref_name }}" "$f" -R ${{ github.repository }} --clobber
+            fi
+          done
+          echo "CLI 资产已挂到 Release ${{ github.ref_name }}"
+
       # ── 回调 hub 列车编排器 ──
       # 镜像发布成功后唤醒 train-orchestrator advance 核对完成度。charts 对齐不再由
       # 本仓 dispatch(列车 v2 起编排器直提 Chart.yaml,双写会致 chart 版本双跳)。
