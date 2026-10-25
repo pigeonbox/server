@@ -7,7 +7,7 @@ toolchain go1.26.10
 require (
 	github.com/oekit/core v0.12.0
 	github.com/oekit/pkg v0.26.0
-	github.com/pigeonbox/core v0.32.13
+	github.com/pigeonbox/core v0.32.14
 	go.uber.org/zap v1.27.0
 )
 
@@ -54,7 +54,7 @@ require (
 	github.com/oekit/kitx v0.3.1 // indirect
 	github.com/pelletier/go-toml/v2 v2.3.1 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
-	github.com/pigeonbox/contracts v0.18.9 // indirect
+	github.com/pigeonbox/contracts v0.19.0 // indirect
 	github.com/pkg/sftp v1.13.11 // indirect
 	github.com/prometheus/client_golang v1.24.1 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
