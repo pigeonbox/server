@@ -109,10 +109,10 @@ github.com/pelletier/go-toml/v2 v2.3.1 h1:MYEvvGnQjeNkRF1qUuGolNtNExTDwct51yp7ol
 github.com/pelletier/go-toml/v2 v2.3.1/go.mod h1:2gIqNv+qfxSVS7cM2xJQKtLSTLUE9V8t9Stt+h56mCY=
 github.com/philhofer/fwd v1.2.0 h1:e6DnBTl7vGY+Gz322/ASL4Gyp1FspeMvx1RNDoToZuM=
 github.com/philhofer/fwd v1.2.0/go.mod h1:RqIHx9QI14HlwKwm98g9Re5prTQ6LdeRQn+gXJFxsJM=
-github.com/pigeonbox/contracts v0.19.0 h1:v6JTLYr9pqdYD7mq+Ta51od5AyXZmARV7CoA1XmcZwo=
-github.com/pigeonbox/contracts v0.19.0/go.mod h1:eOx/xn4PV9AUykmLATWK9q6wGhfhhG1iXqWvfIYtGac=
-github.com/pigeonbox/core v0.32.17 h1:eCT2Nwzdqb0j5nh/55bzyF2Wey4ZZ6o/2wQW4sr9dAE=
-github.com/pigeonbox/core v0.32.17/go.mod h1:Yzbqi6wCDeKjJG+rjh+ldAXg59Q2uaArpXuUMp9Cwo0=
+github.com/pigeonbox/contracts v0.20.3 h1:JEtzQOJ2dEpPFQqmHhJyuJHdJVts+EV7yElMdMPJjRo=
+github.com/pigeonbox/contracts v0.20.3/go.mod h1:eOx/xn4PV9AUykmLATWK9q6wGhfhhG1iXqWvfIYtGac=
+github.com/pigeonbox/core v0.32.18 h1:b5DHjJHN5wHaz5wvCzDLpaz+6++Taq+9NoIGEIutnGY=
+github.com/pigeonbox/core v0.32.18/go.mod h1:sitDKLbzqVnzGZKGBuzbGJkWmKePn0OoL2+TcF7ipNM=
 github.com/pkg/sftp v1.13.11 h1:0N92SLTB8JqASJB14ZLHHzFnBV8mG9zw4K7jghEFWuE=
 github.com/pkg/sftp v1.13.11/go.mod h1:uNkH9roSXglNJqM+glJJi+TQXQUm0fXFWqCFmT8hsN0=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
