@@ -6,8 +6,8 @@ toolchain go1.26.10
 
 require (
 	github.com/oekit/core v0.12.0
-	github.com/oekit/pkg v0.26.0
-	github.com/pigeonbox/core v0.32.14
+	github.com/oekit/pkg v0.28.0
+	github.com/pigeonbox/core v0.32.15
 	go.uber.org/zap v1.27.0
 )
 
@@ -50,7 +50,7 @@ require (
 	github.com/minio/minio-go/v7 v7.3.0 // indirect
 	github.com/modelcontextprotocol/go-sdk v1.8.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/oekit/concurrency v0.21.0 // indirect
+	github.com/oekit/concurrency v0.22.0 // indirect
 	github.com/oekit/kitx v0.3.1 // indirect
 	github.com/pelletier/go-toml/v2 v2.3.1 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
