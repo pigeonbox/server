@@ -119,7 +119,10 @@ func usage(w io.Writer) {
   p2p peers               在线设备名录(node_id 用于定向邀请)
   p2p invites             待收邀请列表
   p2p accept <invite_id>  认领邀请并接收
-  p2p push <目标地址> <口令> [附言]   推送口令到另一实例(免口令交接)
+  p2p push <目标地址> [附言]   推送口令到另一实例(免口令交接)
+                           口令取自 PB_P2P_CODE 环境变量(推荐);
+                           也可写成 <目标地址> <口令> [附言],但会打提示
+                           (命令行参数会进 ps 与 shell 历史)
 
 设备直传已独立为 PigeonBeam(信鸽直传)应用——本 CLI 不再提供直传子命令。
 `)
@@ -147,9 +150,24 @@ func p2pCmd(args []string) error {
 		}
 		err = p2pPost("/admin/p2p/invites/accept", map[string]any{"invite_id": rest[0]})
 	case "push":
-		if len(rest) < 2 {
-			return errUsage("p2p push 需要 <目标实例地址> <口令> [附言]")
+		// 口令优先取环境变量 PB_P2P_CODE（2026-10-26 审计 P2）：
+		// 写在命令行参数里的口令会进 `ps` 输出与 shell 历史 ⇒ 明文暴露。
+		// p2pc 侧早已因同一原因改成 `recv -` + PB_P2P_CODE env。
+		// argv 形态保留兼容，但会打提示（不静默接受明文 argv）。
+		if code := strings.TrimSpace(os.Getenv("PB_P2P_CODE")); code != "" {
+			if len(rest) < 1 {
+				return errUsage("p2p push 需要 <目标实例地址> [附言]（口令取自 PB_P2P_CODE 环境变量）")
+			}
+			err = p2pPost("/admin/p2p/invite-push", map[string]any{
+				"target_url": rest[0], "code": code,
+				"note": strings.Join(rest[1:], " "), "from_name": "",
+			})
+			break
 		}
+		if len(rest) < 2 {
+			return errUsage("p2p push 需要 <目标实例地址> <口令> [附言]（口令建议改用 PB_P2P_CODE 环境变量传入）")
+		}
+		fmt.Fprintln(stderr, "提示：口令写在命令行参数里会被 ps 与 shell 历史看到；建议改用 PB_P2P_CODE 环境变量")
 		err = p2pPost("/admin/p2p/invite-push", map[string]any{
 			"target_url": rest[0], "code": rest[1],
 			"note": strings.Join(rest[2:], " "), "from_name": "",
@@ -292,35 +310,68 @@ type putFlags struct {
 	code     string
 }
 
+// parsePutFlags 解析 put/import 的旗标与位置参数。
+//
+// ## 旗标缺值必须报错（2026-10-26 审计 P1）
+//
+// 原实现每个取值分支写成 `if i+1 < len(args) { i++; f.x = args[i] }`
+// ⇒ **旗标缺值时整个旗标被静默吞掉**：
+//
+//	pb put -t "机密文本" -p   ⇒ 密码被丢 ⇒ 服务端按 require_auth=false 建出
+//	                          **公开**分享 ⇒ 用户以为自己加了密码，实际人人可取。
+//
+// 这类「静默降级」比报错危险得多：安全语义被悄悄**放宽**（共享范围变大），
+// 而命令返回成功 ⇒ 用户毫无察觉。⇒ 缺值一律当**用法错误**（退出码 2）。
+//
+// ## 为什么不用标准库 flag / oekit cli.ParseFlags
+//
+// 标准库 flag 遇到第一个**位置参数就停止解析**（`pb put a.txt -e 7d` 里
+// `-e 7d` 会被当成文件名）⇒ 会破坏「旗标可写在文件之后」的既有用法。
+// 故保留手写解析器，但把「缺值/未知旗标」从静默吞掉改成硬错误。
 func parsePutFlags(args []string) (*putFlags, []string, error) {
 	f := &putFlags{expire: "1d"}
 	var files []string
+	// needValue 取旗标取值；缺值 ⇒ 用法错误（不静默丢）。
+	needValue := func(name string, i int) (string, int, error) {
+		if i+1 >= len(args) {
+			return "", i, errUsage("旗标 " + name + " 缺少取值")
+		}
+		return args[i+1], i + 1, nil
+	}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-t":
-			if i+1 < len(args) {
-				i++
-				f.text = args[i]
+			v, ni, err := needValue("-t", i)
+			if err != nil {
+				return nil, nil, err
 			}
+			f.text = v
+			i = ni
 		case "-e":
-			if i+1 < len(args) {
-				i++
-				f.expire = args[i]
+			v, ni, err := needValue("-e", i)
+			if err != nil {
+				return nil, nil, err
 			}
+			f.expire = v
+			i = ni
 		case "-p":
-			if i+1 < len(args) {
-				i++
-				f.password = args[i]
+			v, ni, err := needValue("-p", i)
+			if err != nil {
+				return nil, nil, err
 			}
+			f.password = v
+			i = ni
 		case "-c":
-			if i+1 < len(args) {
-				i++
-				f.code = args[i]
+			v, ni, err := needValue("-c", i)
+			if err != nil {
+				return nil, nil, err
 			}
+			f.code = v
+			i = ni
 		default:
 			// 未知旗标报错而非当文件名吞掉（曾致 --encrypt 报 open --encrypt: no such file）
 			if len(args[i]) > 1 && strings.HasPrefix(args[i], "-") {
-				return nil, nil, fmt.Errorf("未知参数: %s（见 pb help）", args[i])
+				return nil, nil, errUsage("未知参数: " + args[i] + "（见 pb help）")
 			}
 			files = append(files, args[i])
 		}
@@ -362,7 +413,7 @@ func cmdPut(args []string) error {
 	}
 
 	if len(files) == 0 {
-		return fmt.Errorf("请指定文件或用 -t 分享文本")
+		return errUsage("请指定文件或用 -t 分享文本")
 	}
 
 	// 单文件直传；多文件合并（multi-direct）
@@ -450,7 +501,7 @@ func cmdImport(args []string) error {
 		return err
 	}
 	if len(files) != 1 {
-		return fmt.Errorf("import 需要恰好一个服务器本地路径")
+		return errUsage("import 需要恰好一个服务器本地路径")
 	}
 	expVal, expStyle, err := parseExpire(f.expire)
 	if err != nil {
