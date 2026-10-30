@@ -87,6 +87,7 @@ func app() *cli.App {
 			{Name: "url", Summary: "取分享链接与下载直链", Run: run(cmdURL)},
 			{Name: "rm", Summary: "删除分享", Run: run(cmdDelete)},
 			{Name: "p2p", Summary: "联邦（设备名录/待收邀请/推送）", Run: run(p2pCmd)},
+			{Name: "doctor", Summary: "部署自检（DB/存储/Redis/版本/首启状态）", Run: run(cmdDoctor)},
 			{Name: "help", Summary: "显示用法", Run: func(_ context.Context, _ []string, out, _ io.Writer) int {
 				usage(out)
 				return cli.ExitOK
@@ -114,6 +115,10 @@ func usage(w io.Writer) {
   url [-p <password>] <code>   取分享链接与下载直链（直链含短时效令牌，随取随用勿缓存）
                            -p 取件密码（经 X-Share-Password 头传，不入 URL）
   rm <code>               删除分享
+  doctor [--json]         部署自检：DB/存储/Redis/版本/站点地址/首启状态
+                           --json 输出机器可读结论(CI/巡检用);
+                           退出码 0=健康 1=有待处置或故障 2=用法错误
+                           (深度检查需 admin 用户的 API Key;否则降级为公开面检查)
 
 联邦(admin API Key;2026-10-14):
   p2p peers               在线设备名录(node_id 用于定向邀请)
