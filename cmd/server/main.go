@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -15,6 +16,25 @@ import (
 )
 
 func main() {
+	// 离线子命令（backup / restore）：**不启动 HTTP 服务**。
+	//
+	// 导出/恢复是**同机**运维操作（要读本地 DB 与本地存储）；恢复还会**替换** DB
+	// 文件 ⇒ 必须停服 ⇒ 让它走「另一个进程 + 显式 --yes」，而不是在服务端进程里
+	// 自我替换（那会读到半旧半新的数据）。
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "backup", "restore":
+			if err := runOfflineCommand(os.Args[1], os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "%v\n", err)
+				if errors.Is(err, errOfflineUsage) {
+					os.Exit(2)
+				}
+				os.Exit(1)
+			}
+			return
+		}
+	}
+
 	// 解析命令行参数。
 	// --config 指定配置文件路径；亦可通过 CONFIG_PATH 环境变量设置（flag 优先）。
 	configPath := flag.String("config", "", "配置文件路径（默认 configs/config.yaml，可用 CONFIG_PATH 环境变量覆盖）")
