@@ -113,7 +113,18 @@ storage:
 # 用户配置
 user:
   allow_user_registration: false
-  user_upload_size: 52428800    # 50MB
+  # 单次发送**总量**上限（字节，0=不限）——登录用户一次发送（多文件合计）的
+  # 体积上限；用户级 max_upload_size > 0 时以用户级为准。
+  # ⚠️ 与 upload.max_file_size（**单文件**上限）是两个不同的闸，别混：
+  #   · upload.max_file_size：单个文件最大体积（分片/直传等整文件通道）
+  #   · user.user_upload_size：一次发送的合计体积（登录用户）
+  # 2026-10-30：出厂默认由 50MB 改为 0（不限）——旧默认与 max_file_size 的
+  # 出厂默认 0（不限）自相矛盾（前端显示「单文件大小不限」，登录用户却
+  # 被总量闸卡在 50MB，报「上传总大小超过限制（上限 52428800 字节）」）。
+  # 要限制总量请在管理台「系统配置 → 账户」开启；
+  # ⚠️ 总量上限应 >= 单文件上限，否则大文件永远传不上去
+  # （管理台在两者不一致时会提示并可一键对齐）。
+  user_upload_size: 0
   user_storage_quota: 1073741824 # 1GB
   session_expiry_hours: 168     # 7天
   max_sessions_per_user: 5

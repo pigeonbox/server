@@ -102,7 +102,12 @@ storage:
 
 user:
   allow_user_registration: false
-  user_upload_size: 52428800     # 50MB
+  # 单次发送**总量**上限（字节，0=不限）——登录用户一次发送的合计体积上限；
+  # 用户级 max_upload_size > 0 时以用户级为准。
+  # ⚠️ 与 upload.max_file_size（单文件上限）是两个不同的闸；
+  # ⚠️ 总量上限应 >= 单文件上限，否则大文件永远传不上去。
+  # 2026-10-30：出厂默认由 50MB 改为 0（不限）。
+  user_upload_size: 0
   user_storage_quota: 1073741824 # 1GB
   session_expiry_hours: 168      # 7 天
   max_sessions_per_user: 5
