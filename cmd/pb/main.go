@@ -88,6 +88,7 @@ func app() *cli.App {
 			{Name: "rm", Summary: "删除分享", Run: run(cmdDelete)},
 			{Name: "p2p", Summary: "联邦（设备名录/待收邀请/推送）", Run: run(p2pCmd)},
 			{Name: "doctor", Summary: "部署自检（DB/存储/Redis/版本/首启状态）", Run: run(cmdDoctor)},
+			{Name: "storage", Summary: "存储管理（migrate：把存量对象搬到目标后端）", Run: run(storageCmd)},
 			{Name: "help", Summary: "显示用法", Run: func(_ context.Context, _ []string, out, _ io.Writer) int {
 				usage(out)
 				return cli.ExitOK
@@ -116,6 +117,11 @@ func usage(w io.Writer) {
                            -p 取件密码（经 X-Share-Password 头传，不入 URL）
   rm <code>               删除分享
   doctor [--json]         部署自检：DB/存储/Redis/版本/站点地址/首启状态
+  storage migrate --to <类型> [--path <目录>] [--dry-run]
+                         存储迁移：把存量对象搬到目标后端(搬完才切换;
+                         取件码/链接不变;失败不切换;可中断可续)
+                         --to 如 s3/local/webdav;--path 仅 local 有效;
+                         --dry-run 只看计划。需要 admin API Key。
                            --json 输出机器可读结论(CI/巡检用);
                            退出码 0=健康 1=有待处置或故障 2=用法错误
                            (深度检查需 admin 用户的 API Key;否则降级为公开面检查)
