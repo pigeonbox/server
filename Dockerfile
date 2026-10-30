@@ -1,5 +1,9 @@
 # PigeonBox server 镜像（纯后端；前端由 ghcr.io/pigeonbox/frontend 分离提供）
 #
+# 镜像内含两个可执行文件：
+#   · ./server —— 后端服务
+#   · ./pb     —— 官方 CLI（2026-10-30 起随包：此前只发代码不发二进制 ⇒ 用户跑不了）
+#
 # ⚠️ 本镜像不含前端静态资源(0.9.0 起"内嵌前端"模式已剔除)：
 #   - k8s/compose 前后端分离部署：静态与 API 反代由 frontend 镜像承担
 #   - core 对缺失的 ./static 优雅降级(探针/API 全正常,SPA 路径 404),可安全单跑
@@ -24,6 +28,12 @@ ARG BUILD_TIME=unknown
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-X 'github.com/oekit/core/version.Version=${VERSION}' -X 'github.com/oekit/core/version.BuildCommit=${COMMIT}' -X 'github.com/oekit/core/version.BuildTime=${BUILD_TIME}' -w -s" \
     -o /out/server ./cmd/server
+# 官方 CLI `pb`（2026-10-30）：此前**只发布代码、不随镜像分发** ⇒ 容器/NAS 用户
+# 装不上、也就用不了 `pb doctor`（部署自检）等能力 —— 命令写在文档里，用户跑不了。
+# 与 server 同版本号（同 ldflags），落 /app/pb；用法见 pb help。
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-X 'github.com/oekit/core/version.Version=${VERSION}' -X 'github.com/oekit/core/version.BuildCommit=${COMMIT}' -X 'github.com/oekit/core/version.BuildTime=${BUILD_TIME}' -w -s" \
+    -o /out/pb ./cmd/pb
 
 # Stage 2: Runtime
 FROM alpine:3.22
@@ -34,6 +44,9 @@ RUN apk --no-cache add ca-certificates tzdata wget && \
     mkdir -p /app/data /app/static /app/config && \
     chown -R app:app /app
 COPY --from=go-builder /out/server ./server
+# 官方 CLI（pb doctor / pb put / pb ls …）：随镜像分发，用户可直接
+#   docker exec -it <容器> /app/pb doctor
+COPY --from=go-builder /out/pb ./pb
 # 入口脚本(2026-10-22):把「首启便利逻辑」下沉到镜像层,让 compose / docker run
 # / k8s 三种起法行为一致(此前只在 compose 的 entrypoint 里有,直跑镜像会撞
 # "refusing to create default admin" 的墙)。详见 docker-entrypoint.sh 头注释。
