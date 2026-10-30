@@ -81,6 +81,22 @@ func (s doctorSummary) worst() string {
 	}
 }
 
+// doctorCapabilities 服务端算出的能力位（**生效值**，不是配置回显）。
+//
+// ⚠️ 这段是「部署模式与被降级的能力」这条检查项的**唯一数据来源**：
+// 多副本拓扑下 core 的 deployment.go 会把联邦强制关闭（节点身份是进程级的
+// Ed25519，多副本语义未定义），存储远端后端构造失败也会降级到 local
+// ⇒ 这两件事用户从日志里看不出来，doctor 必须替他说出来。
+type doctorCapabilities struct {
+	DeploymentMode  string `json:"deployment_mode"`
+	PublicURLSet    bool   `json:"public_url_set"`
+	SetupTokenReq   bool   `json:"setup_token_required"`
+	Federation      bool   `json:"federation"`
+	RedisMode       string `json:"redis_mode"`
+	StorageBackend  string `json:"storage_backend"`
+	StorageDegraded bool   `json:"storage_degraded"`
+}
+
 // doctorPayload 服务端诊断端点的响应形状（只取用到的字段）。
 type doctorPayload struct {
 	Version    string `json:"version"`
@@ -111,6 +127,13 @@ type doctorPayload struct {
 		TokenRequired bool   `json:"token_required"`
 		TokenSource   string `json:"token_source"`
 	} `json:"setup"`
+	// Capabilities 服务端算出的能力位（**生效值**，不是配置回显）。
+	//
+	// ⚠️ 这段是「部署模式与被降级的能力」这条检查项的**唯一数据来源**：
+	// 多副本拓扑下 core 的 deployment.go 会把联邦强制关闭（节点身份是进程级的
+	// Ed25519，多副本语义未定义），存储远端后端构造失败也会降级到 local
+	// ⇒ 这两件事用户从日志里看不出来，doctor 必须替他说出来。
+	Capabilities doctorCapabilities `json:"capabilities"`
 }
 
 // doctorPublicPayload /api/config 的响应形状（降级检查用到的字段）。
@@ -317,10 +340,70 @@ func checksFromDiagnostics(p *doctorPayload) []doctorCheck {
 	}
 	checks = append(checks, su)
 
+	// 部署模式与**被降级的能力**（issue ⑧）
+	checks = append(checks, degradedCapabilityCheck(p))
+
 	// 时钟偏差（客户端时钟 vs 服务端时钟）
 	checks = append(checks, clockCheck(p.ServerTime))
 
 	return checks
+}
+
+// degradedCapabilityCheck 「部署模式与被降级的能力」检查项（issue ⑧）。
+//
+// 数据来源：/admin/diagnostics 的 capabilities 段（服务端按**运行时真实状态**
+// 算出的生效值，不是配置回显）。
+//
+// 分级口径：
+//   - 存储降级（配置 s3、实际 local）⇒ **fail**：用户以为在用对象存储，
+//     实际文件全落在本地盘上——这是真故障信号，不是配置缺失；
+//   - 多副本 ⇒ 联邦**架构上不可用**（被 core 强制降级）⇒ warn，并说清原因；
+//     直传（PigeonBeam）在多副本拓扑下同样不适用。
+//
+// ⚠️ 「联邦未启用」本身**不是**问题（配置层面的正常选择）⇒ ok，不告警。
+func degradedCapabilityCheck(p *doctorPayload) doctorCheck {
+	c := doctorCheck{Name: "被降级的能力"}
+	caps := p.Capabilities
+
+	mode := caps.DeploymentMode
+	if mode == "" {
+		mode = p.Deployment
+	}
+	multiReplica := mode == "public" || mode == "admin"
+
+	// 存储降级是真故障信号（配置的后端 ≠ 生效后端）
+	if caps.StorageDegraded {
+		c.Status = "fail"
+		c.Detail = fmt.Sprintf("存储已降级：配置 %s，实际生效 %s",
+			p.Storage.Configured, effectiveStorageBackend(caps, p))
+		c.Advice = "修好远端存储的凭据/网络后重启；在此之前文件会全部落在本地盘"
+		return c
+	}
+
+	if multiReplica {
+		c.Status = "warn"
+		c.Detail = fmt.Sprintf("多副本部署（%s）：联邦已被服务端强制关闭（节点身份是进程级的，多副本语义未定义）", mode)
+		c.Advice = "跨站投递不可用；直传（PigeonBeam）同样不适用于多副本拓扑"
+		return c
+	}
+
+	if !caps.Federation {
+		c.Status = "ok"
+		c.Detail = "联邦未启用（配置层面）"
+		return c
+	}
+
+	c.Status = "ok"
+	c.Detail = "联邦已启用"
+	return c
+}
+
+// effectiveStorageBackend 取生效的存储后端（能力位优先，回落到诊断段的存储信息）。
+func effectiveStorageBackend(caps doctorCapabilities, p *doctorPayload) string {
+	if caps.StorageBackend != "" {
+		return caps.StorageBackend
+	}
+	return p.Storage.Backend
 }
 
 // checksFromPublic 降级检查：只做公开面能看出的事。
