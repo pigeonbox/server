@@ -99,7 +99,10 @@ func runOfflineCommand(mode string, args []string) error {
 	// 初始化：配置 → 全局配置 → 数据库 → 备份服务（与 bootstrap 同款顺序）。
 	cfg, err := bootstrap.InitConfig(configPath)
 	if err != nil {
-		return fmt.Errorf("初始化配置失败: %w", err)
+		// 配置校验要求**所有环境**都有安全的 jwt_secret（服务端要靠它签发令牌）。
+		// 离线备份并不签发令牌，但配置校验是同一套 ⇒ 这里给一句人话提示，
+		// 免得运维看到「初始化配置失败」一头雾水。
+		return fmt.Errorf("初始化配置失败: %w（离线备份同样要过配置校验：把实例的 PB_JWT_SECRET 一并带上即可）", err)
 	}
 	conf.SetGlobalConfig(cfg)
 	database, err := bootstrap.InitDatabase(&cfg.Database)
