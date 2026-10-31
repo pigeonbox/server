@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/oekit/core/lifecycle"
+	"github.com/pigeonbox/core/app/dbmigrate"
 	"github.com/pigeonbox/core/bootstrap"
 	"github.com/pigeonbox/core/pkg/logger"
 	"go.uber.org/zap"
@@ -27,6 +28,17 @@ func main() {
 			if err := runOfflineCommand(os.Args[1], os.Args[2:]); err != nil {
 				fmt.Fprintf(os.Stderr, "%v\n", err)
 				if errors.Is(err, errOfflineUsage) {
+					os.Exit(2)
+				}
+				os.Exit(1)
+			}
+			return
+		case "db":
+			// 换库（导出 / 导入）：只搬**数据库数据**，不碰存储对象；
+			// 与 backup 的分工见 dbmigrate.go 顶部。
+			if err := runDBMigrateCommand(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "%v\n", err)
+				if errors.Is(err, errDBMigrateUsage) || errors.Is(err, dbmigrate.ErrImportNeedsConfirm) {
 					os.Exit(2)
 				}
 				os.Exit(1)
