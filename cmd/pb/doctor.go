@@ -409,13 +409,27 @@ func effectiveStorageBackend(caps doctorCapabilities, p *doctorPayload) string {
 // checksFromPublic 降级检查：只做公开面能看出的事。
 func checksFromPublic() []doctorCheck {
 	checks := []doctorCheck{}
-	ar, err := doReq("GET", "/api/config", nil, "")
+	// ⚠️ 用**匿名通路**（doPublicReq）而不是 doReq：
+	//   doReq 在无 PB_API_KEY 时直接返回错误、根本不发请求
+	//   ⇒ 这里永远拿不到数据 ⇒ 「服务可达」恒 FAIL
+	//   ⇒ doctor 的结论变成「1 项故障」⇒ 用户以为应用坏了（真机实录：fnOS）。
+	ar, err := doPublicReq("GET", "/api/config")
 	if err != nil {
+		// 区分两种失败：**服务不可达** vs **端点要鉴权**——
+		// 后者说明服务其实是活的（回了 401/业务码），只是这个端点不再公开。
+		detail := "GET /api/config 失败：" + err.Error()
+		advice := "确认 PB_SERVER 地址与服务是否在跑"
+		status := "fail"
+		if strings.Contains(err.Error(), "code 10002") || strings.Contains(err.Error(), "未认证") {
+			status = "warn"
+			detail = "GET /api/config 返回未认证（HTTP 鉴权拦截）"
+			advice = "服务可达；该端点需鉴权，请设置 admin 的 PB_API_KEY 后重跑以做深度检查"
+		}
 		checks = append(checks, doctorCheck{
 			Name:   "服务可达",
-			Status: "fail",
-			Detail: "GET /api/config 失败：" + err.Error(),
-			Advice: "确认 PB_SERVER 地址与服务是否在跑",
+			Status: status,
+			Detail: detail,
+			Advice: advice,
 		})
 		return checks
 	}
