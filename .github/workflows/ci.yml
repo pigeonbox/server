@@ -41,6 +41,13 @@ jobs:
           go mod verify
           go mod download -x 2>&1 | tail -1
 
+      # 镜像双推 tag 计算的自测（2026-10-31）：scripts/image_tags.py 决定
+      # 「镜像被推到哪个 registry、钉了哪些 tag」⇒ 写错的后果是
+      # **server 镜像被推到 frontend 名下**（内容错、流水线全绿、无人察觉）。
+      # ⇒ 这段逻辑必须**离线可测**，且判据有区分力（变异验证 6 条全转红）。
+      - name: 镜像 tag 计算自测
+        run: python3 scripts/image_tags_selftest.py
+
   docker:
     # main 推送时验证完整镜像(前端现场 npm ci 构建)
     if: github.event_name == 'push'
