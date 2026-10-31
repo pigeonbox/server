@@ -26,14 +26,15 @@ func TestDBMigrateCommand_UsageErrors(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"无动作", nil},
-		{"同时给 --out 与 --from", []string{"--out", "/tmp/x.json", "--from", "/tmp/y.json"}},
-		{"--out 缺值", []string{"--out"}},
-		{"--from 缺值", []string{"--from"}},
-		{"--config 缺值", []string{"--out", "/tmp/x.json", "--config"}},
-		{"--target-driver 缺值", []string{"--from", "/tmp/x.json", "--target-driver"}},
-		{"--target-dsn 缺值", []string{"--from", "/tmp/x.json", "--target-driver", "postgres", "--target-dsn"}},
-		{"未知参数", []string{"--out", "/tmp/x.json", "--wat"}},
+		{"无子命令", nil},
+		{"未知子命令", []string{"exports"}},
+		{"同时给 --out 与 --from", []string{"export", "--out", "/tmp/x.json", "--from", "/tmp/y.json"}},
+		{"--out 缺值", []string{"export", "--out"}},
+		{"--from 缺值", []string{"import", "--from"}},
+		{"--config 缺值", []string{"export", "--out", "/tmp/x.json", "--config"}},
+		{"--target-driver 缺值", []string{"import", "--from", "/tmp/x.json", "--target-driver"}},
+		{"--target-dsn 缺值", []string{"import", "--from", "/tmp/x.json", "--target-driver", "postgres", "--target-dsn"}},
+		{"未知参数", []string{"export", "--out", "/tmp/x.json", "--wat"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -53,6 +54,7 @@ func TestDBMigrateCommand_UsageErrors(t *testing.T) {
 // ⚠️ 这条在**参数解析之后、连库之前**判 ⇒ 不会误伤数据。
 func TestDBMigrateCommand_ImportNeedsConfirm(t *testing.T) {
 	err := runDBMigrateCommand([]string{
+		"import",
 		"--from", "/tmp/does-not-exist.json",
 		"--target-driver", "postgres",
 		"--target-dsn", "host=127.0.0.1 port=1 user=x password=y dbname=z sslmode=disable",
@@ -68,6 +70,7 @@ func TestDBMigrateCommand_ImportNeedsConfirm(t *testing.T) {
 // TestDBMigrateCommand_UnsupportedTargetDriver —— 不支持的目标方言必须拒。
 func TestDBMigrateCommand_UnsupportedTargetDriver(t *testing.T) {
 	err := runDBMigrateCommand([]string{
+		"import",
 		"--from", "/tmp/does-not-exist.json",
 		"--target-driver", "oracle",
 		"--target-dsn", "whatever",
