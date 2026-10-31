@@ -169,7 +169,7 @@ jobs:
             --hub-server-repo "$HUB_REPO_SERVER" \
             --hub-frontend-repo "$HUB_REPO_FRONTEND" \
             >> "$GITHUB_OUTPUT"
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ github.workspace }}/ws
           file: ${{ github.workspace }}/ws/server/Dockerfile
@@ -189,7 +189,7 @@ jobs:
       # ── frontend 镜像（k8s 前后端分离部署；tag 与 server 完全一致）──
       # tag 集来自合并步骤（ghcr + 可选 Docker Hub）；meta-frontend 已在
       # 合并步骤之前跑过（它的 ghcr tag 是合并的输入之一）。
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ github.workspace }}/ws/frontend
           file: ${{ github.workspace }}/ws/frontend/Dockerfile
