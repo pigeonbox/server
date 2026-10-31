@@ -4,6 +4,18 @@ name: Release
 # chart 以单一 appVersion 同时锁两个镜像）。
 # server 镜像为纯后端(0.9.0 起不含前端静态资源),frontend 镜像
 # (nginx 静态+API 反代)承担全部对外入口。
+#
+# ── Docker Hub 双推（2026-10-31 起）────────────────────────────────────
+# 为什么加：铁威马 TOS 7 应用商店与绿联 UPK 应用中心**只收 Docker Hub 镜像**
+# （拒收 ghcr.io / quay.io / 私有仓库）⇒ 不发 Docker Hub ⇒ 两个平台的
+# 官方应用包**送审不了**（terramaster#99 / ugreen#100 的硬前置）。
+#
+# 为什么「凭据缺失就跳过」而不是「凭据缺失就红」：
+# Docker Hub 账号/token 是**生态层资源**（不在仓里、不可由代码生成）。
+# 若把「没有凭据」当成流水线失败 ⇒ 整条发版链会被外部资源卡死
+# （ghcr 镜像照发不了、Release 建不了）⇒ 事故面被放大。
+# ⇒ 缺凭据时**只跳 Docker Hub 那一路**，ghcr + Release 照常出；
+#   并在 job summary 里显式打出「Docker Hub 未发布」⇒ 不静默。
 on:
   push:
     tags: ["v*"]
@@ -43,6 +55,24 @@ jobs:
             || { echo "::error::frontend 仓无同号 tag ${FE_TAG}——发版走 hub 列车编排器(先 frontend 后 server),勿手打 server tag"; exit 1; }
           echo "ref=${FE_TAG}" >> "$GITHUB_OUTPUT"
           echo "frontend 检出同号 tag ${FE_TAG}(可复现)"
+      # ── Docker Hub 凭据探测（决定是否双推）────────────────────────────
+      # ⚠️ **不把「缺凭据」当失败**：见文件头说明。
+      #    缺 ⇒ 只推 ghcr，并在 job summary 显式记一笔（不静默）。
+      - name: 探测 Docker Hub 凭据
+        id: dhub
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "${DOCKERHUB_USERNAME:-}" ] && [ -n "${DOCKERHUB_TOKEN:-}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Docker Hub::凭据就位，镜像将双推 ghcr + Docker Hub"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Docker Hub 未发布::仓库未配置 DOCKERHUB_USERNAME / DOCKERHUB_TOKEN"
+            echo "::warning::本次仅发布 ghcr 镜像。TOS 7 / UPK 官方应用包送审需要 Docker Hub 镜像。"
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: pigeonbox/frontend
@@ -75,6 +105,14 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # ── Docker Hub 登录（凭据缺失则跳过，不阻塞 ghcr 发布）────────────
+      - name: 登录 Docker Hub
+        if: steps.dhub.outputs.enabled == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - id: btime
         run: echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
       - id: meta
@@ -85,13 +123,59 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
+      # ── frontend 的 ghcr tag（先算出来，供合并步骤用）──────────────
+      - id: meta-frontend
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ghcr.io/pigeonbox/frontend
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+      # ── 双推标签合并（2026-10-31）────────────────────────────────────
+      # metadata-action 只产出 ghcr 的 tag；Docker Hub 的同名 tag 由本步骤
+      # 按**同一套语义**（version / major.minor / latest）拼出来，
+      # 再与 ghcr 的 tag 合成一份列表交给**同一个** build-push-action。
+      #
+      # 为什么是「一次构建、多 tag 推送」而不是「构建两次各推一处」：
+      # 多架构构建实测 ~20 分钟 ⇒ 构建两次 = 40 分钟；更糟的是两次构建的
+      # 层可能不一致（缓存命中差异）⇒ 两个 registry 上的镜像内容可能不同
+      # ⇒ 生态应用包里内嵌的镜像与 ghcr 上的**不等价**。
+      # buildx 原生支持一次 push 到多个 registry（tag 里带不同前缀即可）。
+      #
+      # ⚠️ 两个镜像的 ghcr tag 必须**各用各的**（server 用 ghcr.io/pigeonbox/server，
+      #    frontend 用 ghcr.io/pigeonbox/frontend）——混用会把 server 镜像
+      #    推到 frontend 名下（2026-10-31 实施时踩到，故在此钉住注释）。
+      - id: dhub-tags
+        env:
+          TAG: ${{ github.ref_name }}
+          SERVER_GHCR_TAGS: ${{ steps.meta.outputs.tags }}
+          FRONTEND_GHCR_TAGS: ${{ steps.meta-frontend.outputs.tags }}
+          DOCKERHUB_ENABLED: ${{ steps.dhub.outputs.enabled }}
+          HUB_REPO_SERVER: ${{ vars.DOCKER_HUB_REPO_SERVER || 'pigeonbox/server' }}
+          HUB_REPO_FRONTEND: ${{ vars.DOCKER_HUB_REPO_FRONTEND || 'pigeonbox/frontend' }}
+        run: |
+          set -euo pipefail
+          # 逻辑在脚本里（scripts/image_tags.py）——单一真相源 + 有自测
+          # （scripts/image_tags_selftest.py）。写在 workflow 的 shell 里
+          # ⇒ 无法离线测 ⇒ 「server 镜像推到 frontend 名下」这类错会静默。
+          # ⚠️ 路径：工作区布局步骤已把本仓移到 ws/server ⇒ 脚本在
+          #    ws/server/scripts/ 下（不是仓库根的 scripts/）。
+          python3 "${{ github.workspace }}/ws/server/scripts/image_tags.py" \
+            --tag "$TAG" \
+            --enabled "$DOCKERHUB_ENABLED" \
+            --ghcr-server "$SERVER_GHCR_TAGS" \
+            --ghcr-frontend "$FRONTEND_GHCR_TAGS" \
+            --hub-server-repo "$HUB_REPO_SERVER" \
+            --hub-frontend-repo "$HUB_REPO_FRONTEND" \
+            >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ${{ github.workspace }}/ws
           file: ${{ github.workspace }}/ws/server/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ steps.dhub-tags.outputs.server_tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # buildx 默认 provenance 认证清单会使 GitHub Packages 页面渲染 500
           # (registry 拉取不受影响,仅 Web UI 坏),关掉保证包页可开、可见性可改
@@ -103,21 +187,15 @@ jobs:
             GOPROXY=https://proxy.golang.org,direct
 
       # ── frontend 镜像（k8s 前后端分离部署；tag 与 server 完全一致）──
-      - id: meta-frontend
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
-        with:
-          images: ghcr.io/pigeonbox/frontend
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
+      # tag 集来自合并步骤（ghcr + 可选 Docker Hub）；meta-frontend 已在
+      # 合并步骤之前跑过（它的 ghcr tag 是合并的输入之一）。
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ${{ github.workspace }}/ws/frontend
           file: ${{ github.workspace }}/ws/frontend/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta-frontend.outputs.tags }}
+          tags: ${{ steps.dhub-tags.outputs.frontend_tags }}
           labels: ${{ steps.meta-frontend.outputs.labels }}
           provenance: false
           build-args: |
