@@ -58,6 +58,21 @@ func runDBMigrateCommand(args []string) error {
 	confirm := false
 	allowNonEmpty := false
 
+	// 先剥掉**子命令名**（`db export` / `db import`）——与 backup 同款。
+	//
+	// ⚠️ 漏掉这一步 ⇒ "export" 会落进下面的参数解析器 ⇒ 被当「未知参数」拒绝
+	//   ⇒ **整个子命令不可用**（实录：本地首跑即报「未知参数: export」）。
+	// ⇒ 「子命令名」与「旗标」必须分层解析，别指望一个循环吃下两种东西。
+	if len(args) == 0 {
+		return errDBMigrateUsage
+	}
+	switch args[0] {
+	case "export", "import":
+		args = args[1:]
+	default:
+		return fmt.Errorf("未知 db 子命令: %s（%w）", args[0], errDBMigrateUsage)
+	}
+
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--config":
