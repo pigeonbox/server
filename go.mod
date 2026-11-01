@@ -8,7 +8,7 @@ require (
 	github.com/glebarez/sqlite v1.11.0
 	github.com/oekit/core v0.12.0
 	github.com/oekit/pkg v0.28.0
-	github.com/pigeonbox/core v0.32.42
+	github.com/pigeonbox/core v0.32.43
 	go.uber.org/zap v1.27.0
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/driver/postgres v1.6.3
