@@ -277,6 +277,47 @@ func doReq(method, path string, body io.Reader, contentType string) (*apiResp, e
 	return doReqWithHeaders(method, path, body, contentType, nil)
 }
 
+// doPublicReq 发**匿名**请求（不带 X-API-Key，且**不因缺 Key 而拒绝**）。
+//
+// # 为什么需要它
+//
+// `doReq` 在没有 `PB_API_KEY` 时会**直接返回错误、根本不发请求**
+// ⇒ `pb doctor` 的**公开面检查**（/api/config 这个**无需鉴权**的端点）
+// 在无 Key 场景下**永远拿不到数据** ⇒ 「服务可达」被判成 **FAIL**
+// ⇒ doctor 的结论变成「1 项故障」⇒ **用户以为应用坏了，其实只是没配 Key**。
+//
+// 真机实录（2026-10-31，fnOS 10.10.30.253）：
+//
+//	[FAIL] 服务可达  GET /api/config 失败：未设置 PB_API_KEY（用户中心 → API 令牌 创建）
+//	结论：1 项故障、1 项需处置、0 项正常
+//
+// ⇒ 在 NAS 这类「刚装好、还没配 Key」的场景里，这个结论**极具误导性**
+// （用户会去重装应用，而不是去建一个 API Key）。
+//
+// ⇒ 这里给出**匿名通路**：请求照发，服务端对公开端点正常返回；
+// 若端点其实需要鉴权，则由服务端返回 401 ⇒ 报错文案如实呈现。
+func doPublicReq(method, path string) (*apiResp, error) {
+	req, err := http.NewRequest(method, serverURL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var ar apiResp
+	if err := json.NewDecoder(resp.Body).Decode(&ar); err != nil {
+		return nil, fmt.Errorf("响应解析失败 (HTTP %d): %w", resp.StatusCode, err)
+	}
+	ok := ar.Code == 200 || ar.Code == 0
+	if !ok {
+		return &ar, fmt.Errorf("[code %d] %s", ar.Code, ar.Message)
+	}
+	return &ar, nil
+}
+
 // doReqWithHeaders 发请求（可带附加头）。取件密码经 X-Share-Password 头
 // 传递（2026-10-16 拍板）：query 形态有访问日志/浏览器历史/Referer 泄漏面。
 func doReqWithHeaders(method, path string, body io.Reader, contentType string, headers map[string]string) (*apiResp, error) {
