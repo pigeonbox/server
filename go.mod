@@ -6,10 +6,10 @@ toolchain go1.26.10
 
 require (
 	github.com/glebarez/sqlite v1.11.0
-	github.com/oekit/core v0.12.0
-	github.com/oekit/pkg v0.28.0
+	github.com/oekit/core v0.12.1
+	github.com/oekit/pkg v0.31.2
 	github.com/pigeonbox/core v0.32.48
-	go.uber.org/zap v1.27.0
+	go.uber.org/zap v1.28.0
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/driver/postgres v1.6.3
 	gorm.io/gorm v1.31.2
