@@ -6,8 +6,6 @@ server:
   port: 8888
   mode: "release"          # 生产环境使用 release 模式
   base_url: "https://your-domain.com"  # 修改为实际域名
-  read_timeout: 30
-  write_timeout: 30
 
 database:
   driver: "sqlite"

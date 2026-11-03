@@ -14,8 +14,6 @@ server:
   port: 12345              # env: PB_SERVER_PORT / PORT
   mode: "debug"            # debug | release | test
   base_url: ""             # 对外可访问地址，如 https://your-domain.com（生成分享链接用）
-  read_timeout: 30         # 秒
-  write_timeout: 30        # 秒
 
 database:
   driver: "sqlite"         # sqlite | mysql | postgres  (env: PB_DATABASE_DRIVER / DATABASE_TYPE)

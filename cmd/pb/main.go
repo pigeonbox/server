@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/oekit/pkg/cli"
+	"github.com/oekit/pkg/stringx"
 )
 
 var (
@@ -711,10 +712,16 @@ func boolStr(b bool) string {
 	return "false"
 }
 
+// truncate CLI 列展示截断：总宽 ≤ n（省略号计入 n）。
+//
+// 收编 oekit/pkg/stringx（2026-11-03）：「len≤n 原样返回」的边界语义用
+// TruncRunes 的 truncated 标志精确表达——FirstN/TruncEllipsis 直接用会在
+// len==n 时也截断（差一位）；超长时取前 n-1 runes 追加省略号=总宽恰为 n。
+// 行为差异：n≤0 且 s 非空时旧实现在 r[:n-1] 负下标 panic，现返回 "…"
+// （调用点恒传 48，防御性改进）。
 func truncate(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
+	if out, truncated := stringx.TruncRunes(s, n); !truncated {
+		return out
 	}
-	return string(r[:n-1]) + "…"
+	return stringx.TruncEllipsis(s, n-1)
 }
