@@ -7,8 +7,8 @@ toolchain go1.26.10
 require (
 	github.com/glebarez/sqlite v1.11.0
 	github.com/oekit/core v0.12.1
-	github.com/oekit/pkg v0.31.2
-	github.com/pigeonbox/core v0.33.1
+	github.com/oekit/pkg v0.32.0
+	github.com/pigeonbox/core v0.33.2
 	go.uber.org/zap v1.28.0
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/driver/postgres v1.6.3
@@ -57,7 +57,7 @@ require (
 	github.com/oekit/concurrency v0.23.3 // indirect
 	github.com/oekit/gormx v0.6.6 // indirect
 	github.com/oekit/kitx v0.3.4 // indirect
-	github.com/oekit/logx v0.8.0 // indirect
+	github.com/oekit/logx v0.8.2 // indirect
 	github.com/oekit/redisx v0.10.9 // indirect
 	github.com/pandatix/go-abnf v0.5.3 // indirect
 	github.com/pelletier/go-toml/v2 v2.4.3 // indirect
