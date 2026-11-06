@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -60,7 +61,18 @@ func main() {
 	}
 	defer bootstrap.Cleanup()
 
+	// 监听失败必须 fail-fast（2026-11-06 P1）。
+	//
+	// 缺陷：hertz v0.10.6 的 Spin() 在 ListenAndServe 出错时**只 Errorf 后
+	// return**，不退出进程（见 pkg/app/server/hertz.go）。此前它跑在裸 goroutine
+	// 里、返回值被丢弃 ⇒ 端口被占用 / 无监听权限 / 地址不可用时，进程照旧活着：
+	// systemd / 容器认为服务「已启动且运行中」，健康检查却永远连不上，只能靠人
+	// 发现。⇒ 现在盯住 Spin 的返回：非停机期提前返回即致命退出（非零退出码让
+	// 编排层重启/告警）。
+	var stopping atomic.Bool
+	spinDone := make(chan struct{})
 	go func() {
+		defer close(spinDone)
 		logger.Info("Server starting...")
 		h.Spin()
 	}()
@@ -70,8 +82,26 @@ func main() {
 	// 连接即卡死整个停机流程，只能靠容器运行时 SIGKILL 兜底；排完后 main
 	// 返回，后台任务排水等核心清理经 defer bootstrap.Cleanup() 接力。
 	mgr := lifecycle.New(20 * time.Second)
+	// 停机标记必须在 http 排水**之前**置位：Shutdown 会让 Spin 正常返回，
+	// 没有这个标记就会把「正常停机」误判成「监听失败」而 Fatal。
+	mgr.Add("mark-stop", func(ctx context.Context) error { stopping.Store(true); return nil }, time.Second)
 	mgr.Add("http", func(ctx context.Context) error { return h.Shutdown(ctx) }, 15*time.Second)
-	mgr.Listen(syscall.SIGINT, syscall.SIGTERM)
 
-	logger.Info("Server stopped")
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		mgr.Listen(syscall.SIGINT, syscall.SIGTERM)
+	}()
+
+	select {
+	case <-stopped:
+		logger.Info("Server stopped")
+	case <-spinDone:
+		if stopping.Load() {
+			<-stopped // 正常停机：等排水跑完再退
+			logger.Info("Server stopped")
+			return
+		}
+		logger.Fatal("HTTP 服务异常退出：监听失败（端口被占用 / 无权限 / 地址不可用）")
+	}
 }
