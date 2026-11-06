@@ -194,6 +194,18 @@ moderation:
 admin:
   log_retention_days: 90    # 审计/传输日志保留天数，0=永久
 
+# 定时自动备份（5.1.0；默认**关**——写盘位置由部署形态决定，默认开一个大写入源会让升级变风险动作）
+# 产物与离线子命令 `pigeonbox backup export` **同格式**，可直接互相恢复。
+# 只在 admin 副本上调度（standalone 即本进程）。
+# backup:
+#   enabled: false          # env: PB_BACKUP_ENABLED
+#   dir: ""                 # 空 = <datapath>/backups；相对路径按**数据目录**解析（env: PB_BACKUP_DIR）
+#   keep: 7                 # 保留份数，按数量删最旧；<=0 = 不限（env: PB_BACKUP_KEEP）
+#   at: "03:00"             # 每日时刻，本地时区 24h HH:MM（env: PB_BACKUP_AT）
+# 行为要点：10 分钟轮询 + 「时刻已过且当天无包」判定（对重启/改配置/时钟跳变免疫）；
+# 先写 <name>.tar.gz.partial → Sync → Rename（半截包不会被当成可用包）；
+# **只在成功后清理旧包**（失败一个都不删）；单飞，第二次触发直接返回忙碌。
+
 # ===== 2026-10 能力扩展（P0-P3）=====
 
 # 邮件通知：并入上方 notify: 段（站内信创建后对登记邮箱异步补发；host 空 = 禁用）

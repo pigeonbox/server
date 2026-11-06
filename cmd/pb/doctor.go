@@ -145,6 +145,20 @@ type doctorPayload struct {
 		URL       string `json:"url"`
 		Error     string `json:"error"`
 	} `json:"update"`
+	// Backup 定时自动备份状态（2026-11-06，5.1.0）。**纯本地**，不出站。
+	Backup struct {
+		Enabled      bool   `json:"enabled"`
+		Dir          string `json:"dir"`
+		Keep         int    `json:"keep"`
+		At           string `json:"at"`
+		Count        int    `json:"count"`
+		TotalBytes   int64  `json:"total_bytes"`
+		LastBackupAt string `json:"last_backup_at"`
+		LastFile     string `json:"last_file"`
+		LastSize     int64  `json:"last_size"`
+		Running      bool   `json:"running"`
+		LastError    string `json:"last_error"`
+	} `json:"backup"`
 }
 
 // doctorPublicPayload /api/config 的响应形状（降级检查用到的字段）。
@@ -359,6 +373,9 @@ func checksFromDiagnostics(p *doctorPayload) []doctorCheck {
 
 	// 新版本可用（2026-11-06，5.0.0）
 	checks = append(checks, updateCheck(p))
+
+	// 定时自动备份（2026-11-06，5.1.0）
+	checks = append(checks, backupCheck(p, time.Now()))
 
 	return checks
 }
@@ -626,4 +643,102 @@ func detailSuffix(msg string) string {
 		return ""
 	}
 	return "：" + msg
+}
+
+// backupCheck 「定时自动备份」检查项（2026-11-06，5.1.0）。
+//
+// # 为什么这条要能报 warn
+//
+// 与「有新版本」不同：**备份配好了却没跑起来**是本机的真故障，而且它是最容易
+// 被忽略的那一类——没备份的日子一切正常，直到需要恢复的那天。所以这里对
+// 「启用了但一份都没有」与「最近一份超过 48 小时」都报 warn（退出码 1）。
+//
+// 反过来，**未启用**只报 ok + 建议：默认关闭是产品决定（写盘位置由部署形态
+// 决定），不该让没开的人每次巡检都见到红色。
+func backupCheck(p *doctorPayload, now time.Time) doctorCheck {
+	c := doctorCheck{Name: "备份"}
+	b := p.Backup
+
+	if !b.Enabled {
+		c.Status = "ok"
+		c.Detail = "定时备份未启用"
+		c.Advice = "建议开启（PB_BACKUP_ENABLED=true）：默认每天 " + b.At + " 落一份到 " + b.Dir + "，保留 " + itoa(b.Keep) + " 份"
+		return c
+	}
+
+	if b.LastError != "" {
+		c.Status = "warn"
+		c.Detail = "上次备份失败：" + b.LastError
+		c.Advice = "检查备份目录可写与磁盘余量：" + b.Dir
+		return c
+	}
+
+	if b.Count == 0 || b.LastBackupAt == "" {
+		c.Status = "warn"
+		c.Detail = fmt.Sprintf("已启用但还没有任何备份（计划每天 %s，目录 %s）", b.At, b.Dir)
+		c.Advice = "在管理台「维护」页点「立即备份」先跑一次；或等下一个计划时刻"
+		return c
+	}
+
+	ts, err := time.Parse(time.RFC3339, b.LastBackupAt)
+	if err != nil {
+		c.Status = "ok"
+		c.Detail = fmt.Sprintf("最近备份 %s（共 %d 份 / %s）", b.LastBackupAt, b.Count, humanBytes(b.TotalBytes))
+		return c
+	}
+
+	age := now.Sub(ts)
+	c.Status = "ok"
+	c.Detail = fmt.Sprintf("最近备份 %s（%s前，共 %d 份 / %s）",
+		ts.Format("2006-01-02 15:04"), humanAge(age), b.Count, humanBytes(b.TotalBytes))
+	if b.Running {
+		c.Detail += "；正在备份"
+	}
+	// 48h 而不是 24h：一天一份的节奏下，一次失败 + 一次重试会合法地跨过 24h，
+	// 用 24h 会制造假红。48h 意味着「整整一天都没有新包」——那时候确实该看。
+	if age > 48*time.Hour {
+		c.Status = "warn"
+		c.Detail = fmt.Sprintf("最近一份备份已是 %s前（%s）；计划每天 %s ⇒ 定时任务没有在跑",
+			humanAge(age), ts.Format("2006-01-02 15:04"), b.At)
+		c.Advice = "查启动日志的 auto backup enabled / auto backup failed；或在管理台点「立即备份」"
+	}
+	return c
+}
+
+// humanBytes 人类可读的字节数（诊断输出用）。
+func humanBytes(n int64) string {
+	if n <= 0 {
+		return "0 B"
+	}
+	units := []string{"B", "KB", "MB", "GB", "TB"}
+	value := float64(n)
+	i := 0
+	for value >= 1024 && i < len(units)-1 {
+		value /= 1024
+		i++
+	}
+	if i == 0 {
+		return fmt.Sprintf("%d %s", n, units[i])
+	}
+	return fmt.Sprintf("%.1f %s", value, units[i])
+}
+
+// humanAge 人类可读的时长（只到天/小时，够判断备份新鲜度）。
+func humanAge(d time.Duration) string {
+	if d < 0 {
+		return "0 分钟"
+	}
+	switch {
+	case d < time.Hour:
+		return fmt.Sprintf("%d 分钟", int(d.Minutes()))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%d 小时", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%d 天", int(d.Hours()/24))
+	}
+}
+
+// itoa 小整数转字符串（避免为一个拼接额外引入 strconv 调用点）。
+func itoa(n int) string {
+	return fmt.Sprintf("%d", n)
 }
