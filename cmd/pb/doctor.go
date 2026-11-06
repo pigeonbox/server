@@ -134,6 +134,17 @@ type doctorPayload struct {
 	// Ed25519，多副本语义未定义），存储远端后端构造失败也会降级到 local
 	// ⇒ 这两件事用户从日志里看不出来，doctor 必须替他说出来。
 	Capabilities doctorCapabilities `json:"capabilities"`
+	// Update 更新状态（2026-11-06，5.0.0）。服务端默认 24h 缓存；
+	// source=unknown 表示查不到（离线 / 超时 / 已关闭），**不是故障**。
+	Update struct {
+		Current   string `json:"current"`
+		Latest    string `json:"latest"`
+		Available bool   `json:"available"`
+		Source    string `json:"source"`
+		Stale     bool   `json:"stale"`
+		URL       string `json:"url"`
+		Error     string `json:"error"`
+	} `json:"update"`
 }
 
 // doctorPublicPayload /api/config 的响应形状（降级检查用到的字段）。
@@ -346,7 +357,59 @@ func checksFromDiagnostics(p *doctorPayload) []doctorCheck {
 	// 时钟偏差（客户端时钟 vs 服务端时钟）
 	checks = append(checks, clockCheck(p.ServerTime))
 
+	// 新版本可用（2026-11-06，5.0.0）
+	checks = append(checks, updateCheck(p))
+
 	return checks
+}
+
+// updateCheck 「新版本可用」检查项。
+//
+// # 为什么状态是 ok 而不是 warn
+//
+// 「上游发了新版本」**不是本机的故障**。若用 warn，`pb doctor` 会返回退出码 1
+// ⇒ CI / 巡检会因为「GitHub 上有个新 tag」而恒红，运维很快学会忽略这个信号
+// （告警疲劳比没有告警更糟）。所以：有更新 = ok + detail 写明版本差 + advice
+// 给升级入口；查不到 = ok + 说明「未检查」，绝不报失败。
+//
+// ⚠️ 这条与 §「离线不是故障」同一条原则：**「不知道」和「坏了」必须分开报**。
+func updateCheck(p *doctorPayload) doctorCheck {
+	c := doctorCheck{Name: "新版本"}
+
+	if p.Update.Source == "disabled" {
+		c.Status = "ok"
+		c.Detail = "未启用（update.check_enabled=false）"
+		return c
+	}
+
+	if p.Update.Source == "" || p.Update.Source == "unknown" || p.Update.Latest == "" {
+		c.Status = "ok"
+		c.Detail = "未检查到（离线 / 上游不可达 / 未启用）"
+		if p.Update.Error != "" {
+			c.Detail += "：" + p.Update.Error
+		}
+		return c
+	}
+
+	switch {
+	case p.Update.Available && p.Update.Stale:
+		// 有更新但数据来自过期缓存：版本差可信度降低 ⇒ 但仍不是故障。
+		c.Status = "ok"
+		c.Detail = fmt.Sprintf("可能有新版本 %s（当前 %s；数据取自过期缓存，未必最新）",
+			p.Update.Latest, p.Update.Current)
+	case p.Update.Available:
+		c.Status = "ok"
+		c.Detail = fmt.Sprintf("有新版本 %s（当前 %s）", p.Update.Latest, p.Update.Current)
+		if p.Update.URL != "" {
+			c.Advice = "升级说明 " + p.Update.URL
+		} else {
+			c.Advice = "见各平台升级说明（docs/UPGRADE.md）"
+		}
+	default:
+		c.Status = "ok"
+		c.Detail = fmt.Sprintf("已是最新（%s）", p.Update.Current)
+	}
+	return c
 }
 
 // degradedCapabilityCheck 「部署模式与被降级的能力」检查项（issue ⑧）。
