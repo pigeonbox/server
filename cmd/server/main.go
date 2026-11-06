@@ -6,7 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"sync/atomic"
+	"os/signal"
 	"syscall"
 	"time"
 
@@ -69,7 +69,10 @@ func main() {
 	// systemd / 容器认为服务「已启动且运行中」，健康检查却永远连不上，只能靠人
 	// 发现。⇒ 现在盯住 Spin 的返回：非停机期提前返回即致命退出（非零退出码让
 	// 编排层重启/告警）。
-	var stopping atomic.Bool
+	//
+	// ⚠️ 这里**只能有一处裸 go**（禁裸 go 门禁按「文件+函数」放行主服务协程，
+	// 且每函数只许 1 处）⇒ 信号等待不用协程，改用 signal.NotifyContext（stdlib
+	// 自带内部监听）。这条规则不是挡路：主流程等信号本来就不需要额外协程。
 	spinDone := make(chan struct{})
 	go func() {
 		defer close(spinDone)
@@ -77,31 +80,38 @@ func main() {
 		h.Spin()
 	}()
 
+	sigCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignals()
+
 	// 优雅停机（oekit core/lifecycle，与 p2pd / core Cleanup 同款）：
 	// http 排水拿独立 15s 预算——此前 context.Background() 无界，一个挂死
 	// 连接即卡死整个停机流程，只能靠容器运行时 SIGKILL 兜底；排完后 main
 	// 返回，后台任务排水等核心清理经 defer bootstrap.Cleanup() 接力。
 	mgr := lifecycle.New(20 * time.Second)
-	// 停机标记必须在 http 排水**之前**置位：Shutdown 会让 Spin 正常返回，
-	// 没有这个标记就会把「正常停机」误判成「监听失败」而 Fatal。
-	mgr.Add("mark-stop", func(ctx context.Context) error { stopping.Store(true); return nil }, time.Second)
 	mgr.Add("http", func(ctx context.Context) error { return h.Shutdown(ctx) }, 15*time.Second)
 
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		mgr.Listen(syscall.SIGINT, syscall.SIGTERM)
-	}()
+	shutdown := func() {
+		mgr.Shutdown(context.Background())
+		// Spin 可能还在返回途中：给它同一份停机预算，避免与 defer Cleanup 并发收尾。
+		select {
+		case <-spinDone:
+		case <-time.After(5 * time.Second):
+			logger.Warn("HTTP 服务未在 5s 内退出，继续清理")
+		}
+		logger.Info("Server stopped")
+	}
 
 	select {
-	case <-stopped:
-		logger.Info("Server stopped")
+	case <-sigCtx.Done():
+		shutdown()
 	case <-spinDone:
-		if stopping.Load() {
-			<-stopped // 正常停机：等排水跑完再退
-			logger.Info("Server stopped")
-			return
+		// Spin 先返回：只有「同一瞬间也收到了信号」才算正常停机——shutdown 会让
+		// Spin 正常返回，两者可能同时就绪 ⇒ select 随机选中其一，故在此再判一次。
+		select {
+		case <-sigCtx.Done():
+			shutdown()
+		default:
+			logger.Fatal("HTTP 服务异常退出：监听失败（端口被占用 / 无权限 / 地址不可用）")
 		}
-		logger.Fatal("HTTP 服务异常退出：监听失败（端口被占用 / 无权限 / 地址不可用）")
 	}
 }
