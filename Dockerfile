@@ -21,7 +21,15 @@ WORKDIR /src
 RUN apk add --no-cache git
 COPY server/ ./server/
 WORKDIR /src/server
-RUN go mod download
+# go mod download 有界重试（server#112）：goproxy.cn 对刚推的 tag 有分钟级同步延迟，
+# 503 不触发 GOPROXY 回退（Go 只对 404/410 回退）⇒ 镜像站同步窗口内构建必红、rerun 自愈。
+# 3 次尝试 × 间隔 15s ≈ 覆盖分钟级窗口；真错误（invalid version）也会重试，多花 ~30s 可接受。
+# 脚本逻辑与单测见 server/scripts/go-mod-download-retry.sh 及其 _test.sh；
+# RETRY_DELAYS 环境变量可调重试间隔（本处用默认 15,15）。显式 COPY 一份：
+# `COPY server/ ./server/` 虽已带上 scripts/，但显式声明让「下载步依赖这个脚本」
+# 不再隐式依赖目录级 COPY 的完整性（对将来收窄 .dockerignore 免疫）。
+COPY server/scripts/go-mod-download-retry.sh /src/server/scripts/go-mod-download-retry.sh
+RUN sh scripts/go-mod-download-retry.sh
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILD_TIME=unknown
