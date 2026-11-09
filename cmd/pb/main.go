@@ -8,6 +8,7 @@
 //	export PB_SERVER=http://10.0.0.2:12345
 //	export PB_API_KEY=pb_sk_xxx            # 用户中心 → API 令牌 创建
 //
+//	pb doctor --server http://127.0.0.1:56790  # 自检（端点可显式指定/自动读 .env）
 //	pb put report.pdf                        # 上传文件 → 输出取件码/直链
 //	pb put -e 7d -p secret a.mp4 b.mp4      # 多文件合并为一个分享，7 天，密码保护
 //	pb put -t "hello"                        # 文本分享
@@ -39,6 +40,11 @@ import (
 var (
 	serverURL string
 	apiKey    string
+	// serverURLSource / apiKeySource：当前端点与凭据的**来源**（人读）。
+	// ⚠️ 只放来源标签（如「.env /opt/pigeonbox/.env 的 PB_API_PORT」），
+	// **绝不放密钥明文**——这两条会进 doctor 的输出。
+	serverURLSource string
+	apiKeySource    string
 )
 
 // stdout/stderr 走可注入 writer：命令分发层（oekit/pkg/cli）要求输出流由宿主
@@ -50,8 +56,10 @@ var (
 )
 
 func main() {
-	serverURL = strings.TrimRight(envOr("PB_SERVER", "http://localhost:12345"), "/")
-	apiKey = os.Getenv("PB_API_KEY")
+	// 端点与凭据的解析（issue #117）：
+	//   显式参数 > 环境变量 > 部署目录 .env > 内置默认值。
+	// 解析结果**带来源标注**（供 doctor 输出），且来源标注不含密钥明文。
+	applyEndpoint(resolveEndpoint())
 	os.Exit(app().Run(context.Background(), os.Args[1:], stdout, stderr))
 }
 
@@ -105,6 +113,10 @@ func usage(w io.Writer) {
   PB_SERVER   服务地址（默认 http://localhost:12345）
   PB_API_KEY  用户级 API Key（用户中心 → API 令牌 创建；必需）
 
+  端点与凭据也可从部署目录的 .env 读取（PB_SERVER / PB_API_PORT / PB_API_KEY）；
+  查找顺序：$PIGEONBOX_DIR/.env → ./.env → /opt/pigeonbox/.env → /etc/pigeonbox/.env
+  （命令行的 --server / --api-key-file 优先级最高；来源会在 doctor 输出里标注）
+
 命令:
   put [flags] <file...>   上传文件（多文件合并为一个分享）
     -t <text>             分享文本（与文件互斥）
@@ -117,7 +129,11 @@ func usage(w io.Writer) {
   url [-p <password>] <code>   取分享链接与下载直链（直链含短时效令牌，随取随用勿缓存）
                            -p 取件密码（经 X-Share-Password 头传，不入 URL）
   rm <code>               删除分享
-  doctor [--json]         部署自检：DB/存储/Redis/版本/站点地址/首启状态
+  doctor [--json] [--server <url>] [--api-key-file <路径>]
+                         部署自检：DB/存储/Redis/版本/站点地址/首启状态
+                           --server 指定端点（默认按 PB_SERVER → .env 依次解析）;
+                           --api-key-file 从文件读 API Key（明文不进 argv;
+                           刻意不提供 --api-key 明文形式）
   storage migrate --to <类型> [--path <目录>] [--dry-run]
                          存储迁移：把存量对象搬到目标后端(搬完才切换;
                          取件码/链接不变;失败不切换;可中断可续)
@@ -226,13 +242,6 @@ func prettyPrint(raw json.RawMessage) error {
 	}
 	fmt.Fprintln(stdout, buf.String())
 	return nil
-}
-
-func envOr(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return def
 }
 
 // ===== 过期参数 =====
