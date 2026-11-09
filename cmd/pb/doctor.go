@@ -17,6 +17,30 @@
 // 无 admin Key 时**降级**为公开面检查（/api/config + /version）：仍然给出结论，
 // 但明确标注"深度检查未执行（需要 admin API Key）"，不静默假装检查过。
 //
+// # 端点与凭据（issue #117）
+//
+// `pb doctor` 的端点**不再只认环境变量**：
+//
+//   - `--server <url>`：显式指定端点（优先级最高）；
+//   - 未给定时按 环境变量 PB_SERVER → 部署目录 .env（PB_SERVER / PB_API_PORT）
+//     → 内置默认地址 的顺序解析（见 endpoint.go）；
+//   - API Key 走 `--api-key-file <路径>` / 环境变量 PB_API_KEY / .env 的 PB_API_KEY。
+//     ⚠️ **不接受明文 --api-key**：命令行参数会进 `ps` 与 shell 历史。
+//
+// **读到的来源会标注在输出里**（哪个文件、哪个键）——否则运维无法判断
+// doctor 到底读了什么。
+//
+// # 三态结论（issue #117）
+//
+// 「地址没配」与「端点不可达」**必须分开**，否则运维看到 [FAIL] 会误判成
+// 「服务坏了」（真机 10.10.10.3：后端 12345 端口不发布，裸跑 doctor 打的
+// 是没人监听的默认地址 ⇒ 恒假红）。
+//
+//   - ok    端点已配置且探到了
+//   - na    **未配置端点**（没有 --server / PB_SERVER / .env）⇒ 不是故障，
+//           不探测、不报 fail，只提示怎么配
+//   - fail  端点**已配置但不可达** ⇒ 真问题（配错了/服务没起）
+//
 // # 退出码
 //
 // 沿用 oekit/pkg/cli 的全局语义（0 成功 / 1 运行失败 / 2 用法错误）——
@@ -35,6 +59,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 )
@@ -43,7 +68,10 @@ import (
 type doctorCheck struct {
 	// Name 检查项名（人读的短名）。
 	Name string `json:"name"`
-	// Status ok | warn | fail | skip
+	// Status ok | warn | fail | skip | na
+	//
+	// ⚠️ na = **not applicable**：该项**无法判定**（当前是「端点未配置」）
+	// ⇒ 与 fail 严格分开：na 不是故障，不该让人以为服务坏了（issue #117）。
 	Status string `json:"status"`
 	// Detail 证据/取值。
 	Detail string `json:"detail"`
@@ -58,14 +86,26 @@ type doctorReport struct {
 	Summary doctorSummary `json:"summary"`
 	// Deep true = 执行了深度检查（拿得到 /admin/diagnostics）。
 	Deep bool `json:"deep"`
+	// ServerSource 端点来源（哪个文件、哪个键）；空 = 未标注来源。
+	// ⚠️ 只放来源标签，**不含密钥明文**。
+	ServerSource string `json:"server_source,omitempty"`
+	// APIKeySource 凭据来源；空 = 未提供凭据。
+	// ⚠️ 只放来源标签，**不含密钥明文**。
+	APIKeySource string `json:"api_key_source,omitempty"`
+	// ProbeError 候选端点探测失败的原因（用于给出可操作的下一步）。
+	// 空 = 没探过（已配置且探到了）。
+	ProbeError string `json:"probe_error,omitempty"`
 }
 
 // doctorSummary 结论统计。
 type doctorSummary struct {
-	OK    int `json:"ok"`
-	Warn  int `json:"warn"`
-	Fail  int `json:"fail"`
-	Skip  int `json:"skip"`
+	OK   int `json:"ok"`
+	Warn int `json:"warn"`
+	Fail int `json:"fail"`
+	Skip int `json:"skip"`
+	// NA = **无法判定**的项（当前只有「端点未配置」这一种）。
+	// ⚠️ 与 Fail 严格分开：na 不是故障（issue #117）。
+	NA    int `json:"na"`
 	Total int `json:"total"`
 }
 
@@ -75,6 +115,10 @@ func (s doctorSummary) worst() string {
 	case s.Fail > 0:
 		return "fail"
 	case s.Warn > 0:
+		return "warn"
+	case s.NA > 0:
+		// ⚠️ na **不是** fail（端点没配 ≠ 服务坏了），但同样意味着
+		// 「没检查成」⇒ 退出码仍为 1（没检查 ≠ 检查通过）。
 		return "warn"
 	default:
 		return "ok"
@@ -172,50 +216,284 @@ type doctorPublicPayload struct {
 	} `json:"capabilities"`
 }
 
+// doctorFlags pb doctor 的旗标（自研解析，不用标准库 flag —— 见 main.go 的说明）。
+//
+// ⚠️ **刻意没有 --api-key 明文形式**：命令行参数会进 `ps` 与 shell 历史
+// （与 p2p push 的 PB_P2P_CODE 同一条理由）⇒ 给了 --api-key 直接当用法错误拒绝，
+// 并指向 --api-key-file / 环境变量 PB_API_KEY。
+type doctorFlags struct {
+	jsonOut    bool
+	server     string
+	apiKeyFile string
+}
+
+// parseDoctorFlags 解析 pb doctor 的旗标。
+//
+// 旗标缺值 ⇒ **用法错误**（退出码 2），与 parsePutFlags 同一口径：
+// 静默吞掉旗标会让「没配端点」变成「配了但没人知道」。
+func parseDoctorFlags(args []string) (doctorFlags, error) {
+	var f doctorFlags
+	needValue := func(name string, i int) (string, int, error) {
+		if i+1 >= len(args) {
+			return "", i, errUsage("旗标 " + name + " 缺少取值")
+		}
+		return args[i+1], i + 1, nil
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--json":
+			f.jsonOut = true
+		case a == "--server":
+			v, ni, err := needValue("--server", i)
+			if err != nil {
+				return f, err
+			}
+			// ⚠️ 空端点必须报错：静默回落成默认地址 ⇒ 又变成「打错地方」。
+			if strings.TrimSpace(v) == "" {
+				return f, errUsage("--server 不能为空（要给一个 http(s):// 地址）")
+			}
+			f.server = v
+			i = ni
+		case strings.HasPrefix(a, "--server="):
+			f.server = strings.TrimPrefix(a, "--server=")
+			if strings.TrimSpace(f.server) == "" {
+				return f, errUsage("--server 不能为空（要给一个 http(s):// 地址）")
+			}
+		case a == "--api-key-file":
+			v, ni, err := needValue("--api-key-file", i)
+			if err != nil {
+				return f, err
+			}
+			if strings.TrimSpace(v) == "" {
+				return f, errUsage("--api-key-file 不能为空（要给一个文件路径）")
+			}
+			f.apiKeyFile = v
+			i = ni
+		case strings.HasPrefix(a, "--api-key-file="):
+			f.apiKeyFile = strings.TrimPrefix(a, "--api-key-file=")
+			if strings.TrimSpace(f.apiKeyFile) == "" {
+				return f, errUsage("--api-key-file 不能为空（要给一个文件路径）")
+			}
+		case a == "--api-key" || strings.HasPrefix(a, "--api-key="):
+			// ⚠️ 拒绝明文密钥：argv 会进 ps 与 shell 历史。
+			return f, errUsage("--api-key 不接受明文密钥（会进 ps 与 shell 历史）；请用 --api-key-file <路径> 或环境变量 PB_API_KEY")
+		default:
+			return f, errUsage("未知参数: " + a + "（pb doctor 支持 --json / --server <url> / --api-key-file <路径>）")
+		}
+	}
+	return f, nil
+}
+
+// readKeyFile 读 API Key 文件（只给路径，明文不进 argv）。
+//
+// ⚠️ 读到的**内容**只在内存里用，**绝不进输出与日志**；
+// 输出里只出现「来源：命令行 --api-key-file <路径>」这样的标签。
+func readKeyFile(path string) (string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("读取 API Key 文件失败: %w", err)
+	}
+	key := strings.TrimSpace(string(raw))
+	if key == "" {
+		return "", fmt.Errorf("API Key 文件为空: %s", path)
+	}
+	return key, nil
+}
+
+// reachabilityStatus 判定「服务可达」这条检查的三态（issue #117）。
+//
+// ⚠️ 这三态的边界就是 issue 的核心：**「没配端点」与「端点不可达」
+// 必须分开**——把前者印成 [FAIL] 会让运维以为服务坏了（真机 10.10.10.3：
+// 后端 12345 端口不发布 ⇒ 裸跑 doctor 打的默认地址没人监听 ⇒ 恒假红）。
+//
+//   - reachable && configured ⇒ ok（探到了）
+//   - reachable && !configured ⇒ ok（默认地址探到了；来源未配置仍会单独标注）
+//   - !reachable && configured ⇒ **fail**（配了却连不上 ⇒ 真问题）
+//   - !reachable && !configured ⇒ **na**（不知道服务在哪 ⇒ 无法判定，
+//     **不是**故障）
+func reachabilityStatus(configured, reachable bool) string {
+	switch {
+	case reachable:
+		return "ok"
+	case configured:
+		return "fail"
+	default:
+		return "na"
+	}
+}
+
+// hasCandidate 判断候选列表里是否已有该地址（避免重复探测）。
+func hasCandidate(cands []endpointCandidate, url string) bool {
+	for _, c := range cands {
+		if c.URL == url {
+			return true
+		}
+	}
+	return false
+}
+
+// selectEndpoint 逐个探测候选端点，返回**第一个确实是 PigeonBox API** 的那个。
+//
+// ⚠️ 判据不是「有响应就算活着」：TLS 端口用明文 HTTP 打过去会回 nginx 的
+// HTML 提示页（HTTP 400）——那是响应，但**不是 PigeonBox 的响应**
+// ⇒ 据此判「可达」会得到「端点可达、但后续全 400」的假绿。
+//
+// 返回 (选中的候选, 错误说明)。全部候选都探不到时返回零值候选 + 首个失败原因。
+func selectEndpoint(cands []endpointCandidate) (endpointCandidate, error) {
+	var firstErr error
+	for _, c := range cands {
+		alive, err := probeEndpoint(c.URL)
+		if alive {
+			return c, nil
+		}
+		if firstErr == nil {
+			firstErr = fmt.Errorf("%s：%w", c.URL, err)
+		}
+	}
+	return endpointCandidate{}, firstErr
+}
+
+// describeEndpoint 产出端点来源的**人读**说明。
+//
+// ⚠️ 只描述「哪来的」，**绝不包含任何密钥明文**。
+func describeEndpoint(ep endpoint) string {
+	if ep.URLSource != "" {
+		return ep.URLSource
+	}
+	if ep.URL != "" && ep.URL != defaultServerURL {
+		return "直接指定（未标注来源）"
+	}
+	return "未配置（未找到 --server / 环境变量 PB_SERVER / .env 的 PB_SERVER 或 PB_API_PORT）"
+}
+
 // cmdDoctor 执行部署自检。
 //
 // 用法：
 //
-//	pb doctor            人读结论
-//	pb doctor --json     机器读（JSON）
+//	pb doctor                      人读结论
+//	pb doctor --json               机器读（JSON）
+//	pb doctor --server <url>       显式指定端点（issue #117）
+//	pb doctor --api-key-file <路径> 从文件读 API Key（明文不进 argv）
 func cmdDoctor(args []string) error {
-	jsonOut := false
-	for _, a := range args {
-		switch a {
-		case "--json":
-			jsonOut = true
-		default:
-			return errUsage("未知参数: " + a + "（pb doctor 只支持 --json）")
-		}
+	f, err := parseDoctorFlags(args)
+	if err != nil {
+		return err
 	}
 
-	report := doctorReport{Server: serverURL}
+	// 候选端点：默认取启动时解析出的有序候选；--server **独占**（不回落到其它候选）。
+	//
+	// ⚠️ 显式 --server 时不回落：用户明确指定了地址，探别的端口等于
+	// 「不听指挥」（而且会把请求打到别的主机/端口上）。
+	// 候选端点**每次现取**（不缓存）：进程启动时解析过一次，但 doctor 可能
+	// 在别的上下文里被调用；现取保证「读到什么」永远与当下环境一致。
+	cur := currentEndpoint()
+	cands := resolveEndpoint().Candidates
+	if f.server != "" {
+		// 显式指定 ⇒ **独占**：用户指了地址，探别的端口等于「不听指挥」。
+		cands = []endpointCandidate{{
+			URL:    normalizeServerURL(f.server),
+			Source: "命令行 --server",
+		}}
+	} else if len(cands) == 0 && cur.URL != "" {
+		// 环境与 .env 都没给地址 ⇒ 回落：若程序内已直接设置过端点（单测夹具 /
+		// 编程调用），拿它当候选；否则就是内置默认地址（= 未配置）。
+		cands = []endpointCandidate{{URL: cur.URL, Source: cur.URLSource}}
+	}
+
+	ep := endpoint{Candidates: cands}
+	if f.apiKeyFile != "" {
+		key, kerr := readKeyFile(f.apiKeyFile)
+		if kerr != nil {
+			return kerr
+		}
+		ep.APIKey = key
+		ep.APIKeySource = "命令行 --api-key-file " + f.apiKeyFile
+	} else {
+		// 未显式给 Key ⇒ 用启动时解析出的（env / .env）。
+		ep.APIKey = apiKey
+		ep.APIKeySource = apiKeySource
+	}
+
+	// 生效到全局（请求层读的就是这两个全局）。
+	// ⚠️ 结束时还原：doctor 不该给后续逻辑留下副作用（单测连续调用靠它隔离）。
+	oldURL, oldURLSrc := serverURL, serverURLSource
+	oldKey, oldKeySrc := apiKey, apiKeySource
+	defer func() {
+		serverURL, serverURLSource = oldURL, oldURLSrc
+		apiKey, apiKeySource = oldKey, oldKeySrc
+	}()
+
+	// 逐个探测候选，取**第一个确实是 PigeonBox API** 的端点。
+	//
+	// ⚠️ 为什么必须探：真机 10.10.10.3 的 .env 里 PB_API_PORT 指的是 **TLS 端口**，
+	// 明文打过去是 nginx 的 400 提示页 ⇒ 只读一个键**仍然会假红**（issue #117）。
+	chosen, probeErr := selectEndpoint(cands)
+	if chosen.URL != "" {
+		ep.URL = chosen.URL
+		ep.URLSource = chosen.Source
+	} else {
+		// 一个都没探到 ⇒ 用第一个候选（供输出展示「试的是哪个地址」）。
+		if len(cands) > 0 {
+			ep.URL = cands[0].URL
+			ep.URLSource = cands[0].Source
+		} else {
+			ep.URL = defaultServerURL
+			ep.URLSource = ""
+		}
+	}
+	serverURL, serverURLSource = ep.URL, ep.URLSource
+	apiKey, apiKeySource = ep.APIKey, ep.APIKeySource
+
+	configured := endpointConfigured(ep)
+	report := doctorReport{
+		Server:       ep.URL,
+		ServerSource: describeEndpoint(ep),
+		APIKeySource: ep.APIKeySource,
+	}
+	if probeErr != nil {
+		report.ProbeError = probeErr.Error()
+	}
 
 	// 深度检查：管理面诊断端点（需要 admin API Key）。
-	deep, err := fetchDiagnostics()
-	if err == nil && deep != nil {
+	deep, derr := fetchDiagnostics()
+	if derr == nil && deep != nil {
 		report.Deep = true
 		report.Checks = append(report.Checks, checksFromDiagnostics(deep)...)
 	} else {
 		// 拿不到深度数据 ⇒ 降级为公开面检查，并**明确**说明未做深度检查。
+		// 深度检查没跑成的原因分两类，**严重度不同**（issue #117）：
+		//   - 端点没配 ⇒ **na**（无从谈起，不是故障；先配端点）；
+		//   - 端点配了但拿不到管理面数据 ⇒ warn（Key 缺失/权限不足/服务端拒绝）。
+		deepStatus := "warn"
 		reason := "未设置 PB_API_KEY"
 		if apiKey != "" {
 			reason = "需要 admin 用户的 API Key（当前 Key 无管理面权限或服务端不可达）"
-			if apiErr, ok := err.(*doctorAuthError); ok {
+			if apiErr, ok := derr.(*doctorAuthError); ok {
 				reason = apiErr.Reason
 			}
 		}
+		if !configured {
+			// ⚠️ 端点没配 ⇒ 这次失败**多半是打错地址**，不是 Key 的问题。
+			// 报「Key 无权限」会把人引到错误的方向（issue #117）。
+			deepStatus = "na"
+			reason = "未配置端点（没有 --server / PB_SERVER / .env，请求打到默认地址 " + ep.URL + "）"
+		}
 		report.Checks = append(report.Checks, doctorCheck{
 			Name:   "深度检查",
-			Status: "warn",
+			Status: deepStatus,
 			Detail: "未执行（" + reason + "）",
-			Advice: "在用户中心用管理员账号创建 API Key，设置 PB_API_KEY 后重跑",
+			Advice: "用 --server <url> 指定端点，并在用户中心用管理员账号创建 API Key（PB_API_KEY 或 --api-key-file）",
 		})
-		report.Checks = append(report.Checks, checksFromPublic()...)
+		report.Checks = append(report.Checks, checksFromPublic(configured, probeErr)...)
 	}
 
 	report.Summary = summarize(report.Checks)
+	return doctorFinish(report, f.jsonOut)
+}
 
+// doctorFinish 输出结论并映射退出码（0 健康 / 1 有待处置或无法判定 / 2 用法错误）。
+func doctorFinish(report doctorReport, jsonOut bool) error {
 	if jsonOut {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
@@ -254,6 +532,9 @@ func (e *doctorExitError) Error() string {
 		return fmt.Sprintf("自检发现 %d 项故障", e.report.Summary.Fail)
 	case e.report.Summary.Warn > 0:
 		return fmt.Sprintf("自检发现 %d 项需要处置", e.report.Summary.Warn)
+	case e.report.Summary.NA > 0:
+		// ⚠️ na = 无法判定（未配置端点）⇒ 不是故障，但也不能算通过。
+		return fmt.Sprintf("自检未完成：%d 项无法判定（未配置端点）", e.report.Summary.NA)
 	default:
 		return "自检未完成"
 	}
@@ -487,7 +768,11 @@ func effectiveStorageBackend(caps doctorCapabilities, p *doctorPayload) string {
 }
 
 // checksFromPublic 降级检查：只做公开面能看出的事。
-func checksFromPublic() []doctorCheck {
+//
+// configured = 端点是否**已配置**（--server / PB_SERVER / .env）。
+// ⚠️ 它决定「连不上」时该判 fail 还是 na（issue #117）：
+// 没配地址 ⇒ 连不上只是「不知道服务在哪」，**不是**故障。
+func checksFromPublic(configured bool, probeErr error) []doctorCheck {
 	checks := []doctorCheck{}
 	// ⚠️ 用**匿名通路**（doPublicReq）而不是 doReq：
 	//   doReq 在无 PB_API_KEY 时直接返回错误、根本不发请求
@@ -497,9 +782,25 @@ func checksFromPublic() []doctorCheck {
 	if err != nil {
 		// 区分两种失败：**服务不可达** vs **端点要鉴权**——
 		// 后者说明服务其实是活的（回了 401/业务码），只是这个端点不再公开。
-		detail := "GET /api/config 失败：" + err.Error()
-		advice := "确认 PB_SERVER 地址与服务是否在跑"
-		status := "fail"
+		// 三态（issue #117）：端点已配却连不上 ⇒ fail；没配 ⇒ na。
+		// ⚠️ 「端点不可达」与「未配置端点」必须分开，否则运维会误判成「服务坏了」
+		// （真机 10.10.10.3：后端端口不发布 ⇒ 默认地址没人监听 ⇒ 裸跑必假红）。
+		status := reachabilityStatus(configured, false)
+		detail := "端点不可达：GET /api/config 失败：" + err.Error()
+		advice := "确认端点地址与服务是否在跑（--server / PB_SERVER / .env 的 PB_API_PORT）"
+		if probeErr != nil {
+			// 候选探测已经逐个试过了 ⇒ 用探测结论（比二次请求的报错更准：
+			// 能区分「连不上」与「连上了但不是 PigeonBox API（TLS 端口明文打过去）
+			// ⇒ 后者是**地址口径错**，不是服务坏了）。
+			detail = "端点不可达：" + probeErr.Error()
+			advice = "确认端点地址与协议（--server / PB_SERVER / .env 的 PB_FRONTEND_PORT、PB_API_PORT）；TLS 端口要用 https://"
+		}
+		if !configured {
+			// 没配端点 ⇒ 这次「连不上」只说明**地址是猜的**（内置默认地址），
+			// 不能据此说服务坏了 ⇒ 判 na（无法判定）。
+			detail = "未配置端点：默认地址 " + serverURL + " 不可达（" + err.Error() + "）"
+			advice = "用 --server <url> 指定真实端点；或在部署目录写 .env（含 PB_SERVER 或 PB_API_PORT）"
+		}
 		if strings.Contains(err.Error(), "code 10002") || strings.Contains(err.Error(), "未认证") {
 			status = "warn"
 			detail = "GET /api/config 返回未认证（HTTP 鉴权拦截）"
@@ -522,7 +823,14 @@ func checksFromPublic() []doctorCheck {
 		})
 		return checks
 	}
-	checks = append(checks, doctorCheck{Name: "服务可达", Status: "ok", Detail: serverURL})
+	// 探到了：端点可用。
+	// ⚠️ 若端点**未配置**，那这只是「默认地址恰好能用」，不等于「部署端点已确认」
+	// ⇒ 结论写清来源，别让人以为配置是好的（issue #117）。
+	reachDetail := serverURL
+	if !configured {
+		reachDetail = serverURL + "（默认地址恰好可达；端点未显式配置）"
+	}
+	checks = append(checks, doctorCheck{Name: "服务可达", Status: "ok", Detail: reachDetail})
 	if p.Capabilities.DeploymentMode != "" {
 		checks = append(checks, doctorCheck{
 			Name:   "部署模式",
@@ -590,6 +898,10 @@ func summarize(checks []doctorCheck) doctorSummary {
 			s.Warn++
 		case "fail":
 			s.Fail++
+		case "na":
+			// ⚠️ na 单列，**不并进 Skip 也不并进 Fail**
+			// （issue #117）：并进 Fail 会把「没配地址」说成「服务坏了」。
+			s.NA++
 		default:
 			s.Skip++
 		}
@@ -600,6 +912,20 @@ func summarize(checks []doctorCheck) doctorSummary {
 // printDoctorReport 人读结论输出。
 func printDoctorReport(r doctorReport) {
 	fmt.Fprintf(stdout, "PigeonBox 部署自检 → %s\n", r.Server)
+	// 来源标注（issue #117）：让运维知道 doctor 到底读了哪份配置。
+	// ⚠️ 只打来源标签，**不打密钥明文**。
+	if r.ServerSource != "" {
+		fmt.Fprintf(stdout, "端点来源：%s\n", r.ServerSource)
+	}
+	if r.APIKeySource != "" {
+		fmt.Fprintf(stdout, "凭据来源：%s\n", r.APIKeySource)
+	} else {
+		fmt.Fprintln(stdout, "凭据来源：未配置（未设置 PB_API_KEY / --api-key-file）")
+	}
+	if r.ProbeError != "" {
+		// 候选端点全试过了都没通 ⇒ 把结论摆出来（issue #117：别让人猜）。
+		fmt.Fprintf(stdout, "端点探测：%s\n", r.ProbeError)
+	}
 	if !r.Deep {
 		fmt.Fprintln(stdout, "（未取到管理面数据：以下为公开面检查，深度项缺失）")
 	}
@@ -611,12 +937,32 @@ func printDoctorReport(r doctorReport) {
 		}
 	}
 	fmt.Fprintln(stdout)
+	// 结论行：故障 / 需处置 / **未配置**（na）/ 正常。
+	// ⚠️ na 单列一句——它是「无法判定」，不是「故障」也不是「正常」
+	// （issue #117）。na==0 时**保持既有文案不变**（老脚本按「全部正常」判成功）。
+	naPart := ""
+	if r.Summary.NA > 0 {
+		naPart = fmt.Sprintf("%d 项未配置", r.Summary.NA)
+	}
 	switch {
 	case r.Summary.Fail > 0:
-		fmt.Fprintf(stdout, "结论：%d 项故障、%d 项需处置、%d 项正常\n",
-			r.Summary.Fail, r.Summary.Warn, r.Summary.OK)
+		if naPart != "" {
+			fmt.Fprintf(stdout, "结论：%d 项故障、%d 项需处置、%s、%d 项正常\n",
+				r.Summary.Fail, r.Summary.Warn, naPart, r.Summary.OK)
+		} else {
+			fmt.Fprintf(stdout, "结论：%d 项故障、%d 项需处置、%d 项正常\n",
+				r.Summary.Fail, r.Summary.Warn, r.Summary.OK)
+		}
 	case r.Summary.Warn > 0:
-		fmt.Fprintf(stdout, "结论：%d 项需处置、%d 项正常\n", r.Summary.Warn, r.Summary.OK)
+		if naPart != "" {
+			fmt.Fprintf(stdout, "结论：%d 项需处置、%s、%d 项正常\n",
+				r.Summary.Warn, naPart, r.Summary.OK)
+		} else {
+			fmt.Fprintf(stdout, "结论：%d 项需处置、%d 项正常\n", r.Summary.Warn, r.Summary.OK)
+		}
+	case r.Summary.NA > 0:
+		fmt.Fprintf(stdout, "结论：%s、%d 项正常（%d 项无法判定）\n",
+			naPart, r.Summary.OK, r.Summary.NA)
 	default:
 		fmt.Fprintf(stdout, "结论：全部正常（%d 项）\n", r.Summary.OK)
 	}
@@ -631,6 +977,10 @@ func statusLabel(status string) string {
 		return "WARN"
 	case "fail":
 		return "FAIL"
+	case "na":
+		// ⚠️ 独立标签：**不是** FAIL（issue #117）——
+		// 「没配端点」与「端点不可达」必须一眼能分开。
+		return "NA"
 	default:
 		return "SKIP"
 	}

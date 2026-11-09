@@ -49,9 +49,17 @@ func captureForm(t *testing.T) (map[string]string, func()) {
 func useTestServer(t *testing.T, srv *httptest.Server) {
 	t.Helper()
 	oldServer, oldKey := serverURL, apiKey
+	oldServerSrc, oldKeySrc := serverURLSource, apiKeySource
 	serverURL = srv.URL
 	apiKey = "pb_sk_test"
-	t.Cleanup(func() { serverURL, apiKey = oldServer, oldKey })
+	// 来源标注一并置位（issue #117 新增的全局）：夹具直接设的端点，
+	// 属于「已配置但未标注来源」⇒ doctor 必须按**已配置**处理。
+	serverURLSource = ""
+	apiKeySource = ""
+	t.Cleanup(func() {
+		serverURL, apiKey = oldServer, oldKey
+		serverURLSource, apiKeySource = oldServerSrc, oldKeySrc
+	})
 }
 
 // TestPutTextRequiresRequireAuth —— 文本分享：无密码也必须显式发 require_auth=false。
