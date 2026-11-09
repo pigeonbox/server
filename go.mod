@@ -7,8 +7,8 @@ toolchain go1.26.10
 require (
 	github.com/glebarez/sqlite v1.11.0
 	github.com/oekit/core v0.13.5
-	github.com/oekit/pkg v0.40.0
-	github.com/pigeonbox/core v0.38.0
+	github.com/oekit/pkg v0.41.0
+	github.com/pigeonbox/core v0.39.0
 	go.uber.org/zap v1.28.0
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/driver/postgres v1.6.3
@@ -54,11 +54,11 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
-	github.com/oekit/concurrency v0.28.1 // indirect
+	github.com/oekit/concurrency v0.31.0 // indirect
 	github.com/oekit/gormx v0.11.7 // indirect
-	github.com/oekit/kitx v0.4.3 // indirect
-	github.com/oekit/logx v0.8.11 // indirect
-	github.com/oekit/redisx v0.11.3 // indirect
+	github.com/oekit/kitx v0.5.0 // indirect
+	github.com/oekit/logx v0.8.12 // indirect
+	github.com/oekit/redisx v0.12.0 // indirect
 	github.com/pandatix/go-abnf v0.5.5 // indirect
 	github.com/pelletier/go-toml/v2 v2.4.3 // indirect
 	github.com/philhofer/fwd v1.2.1 // indirect
@@ -100,7 +100,6 @@ require (
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
-	golang.org/x/tools v0.52.1-0.20261106145633-d407941a339a // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/ini.v1 v1.67.3 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
