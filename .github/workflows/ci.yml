@@ -48,6 +48,35 @@ jobs:
       - name: 镜像 tag 计算自测
         run: python3 scripts/image_tags_selftest.py
 
+  # 文档↔代码对账（hub 门禁接线，Refs pigeonbox/pigeonbox#327 的建议修法后半）：
+  # hub 仓 scripts/check-docs-consistency.sh 的 PB_* 绑定扫描源含本仓（core+server），
+  # 但此前只在 hub 仓 CI 跑 ⇒ server 侧新增 PB_* 绑定而 hub 文档没跟上时，
+  # 只有下趟 hub CI 才兜得住。这里把同款对账接进本仓 CI：
+  #   - 门禁脚本与文档/契约真相源 = pigeonbox/pigeonbox（hub）默认分支；
+  #   - server 扫描源 = **触发 ref 的本仓检出**（PR 自身代码，不是 server@main）
+  #     ⇒ 本 PR 新增的绑定当场判红，这正是接线的意义；
+  #   - 布局镜像 hub 仓 docs-consistency job（hub 为根，contracts/core/server 为子目录），
+  #     零 env 覆盖，跑的是与 hub CI 同一条命令（--selfcheck 含七条注入自检）。
+  # 耦合取舍：本仓 PR 若新增 PB_* 绑定，需 hub 侧文档先落（或同批）才绿——把
+  # 「下趟 hub CI 才发现」提前到本仓 CI 当场发现。门禁脚本缺位/扫描源缺仓都判红
+  # （脚本自身口径：缺仓不判绿、判红点名），本步骤不做 || true 容忍。
+  docs-consistency:
+    name: 文档↔代码对账（环境变量绑定，hub 门禁）
+    runs-on: ubuntu-latest
+    steps:
+      # 顺序有讲究：hub 先检出，contracts/core/server 后嵌套检出——checkout 的
+      # clean 步会清目标目录，嵌套检出放前面会被后到的 hub 检出冲掉。
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { repository: pigeonbox/pigeonbox, path: hub }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { repository: pigeonbox/contracts, path: hub/contracts }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { repository: pigeonbox/core, path: hub/core }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { path: hub/server } # 触发 ref（PR 自身代码）
+      - name: 错误码表 ⊇ errcode 常量；环境变量文档 ⊇ core/server 绑定的 PB_*
+        run: bash hub/scripts/check-docs-consistency.sh --selfcheck
+
   docker:
     # main 推送时验证完整镜像(前端现场 npm ci 构建)
     if: github.event_name == 'push'
