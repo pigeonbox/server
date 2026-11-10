@@ -77,6 +77,12 @@ type doctorCheck struct {
 	Detail string `json:"detail"`
 	// Advice 下一步（可为空）。
 	Advice string `json:"advice,omitempty"`
+	// Advisory 提示级（core#121）：显示 WARN 但**不参与退出码**。
+	//
+	// 只用于「必须可见、但部署本身没坏」的项（如 ClamAV 扫描器不可用：
+	// fail-open 放行中、业务照常）——若并入 warn，巡检/CI 会恒红，
+	// 与「新版本」项的告警疲劳同一条理由。退出码口径见 doctorSummary.worst。
+	Advisory bool `json:"advisory,omitempty"`
 }
 
 // doctorReport 一次自检的完整结论。
@@ -105,7 +111,9 @@ type doctorSummary struct {
 	Skip int `json:"skip"`
 	// NA = **无法判定**的项（当前只有「端点未配置」这一种）。
 	// ⚠️ 与 Fail 严格分开：na 不是故障（issue #117）。
-	NA    int `json:"na"`
+	NA int `json:"na"`
+	// Note = advisory 提示级条数（WARN 显示但不改退出码，core#121）。
+	Note  int `json:"note"`
 	Total int `json:"total"`
 }
 
@@ -189,6 +197,11 @@ type doctorPayload struct {
 		URL       string `json:"url"`
 		Error     string `json:"error"`
 	} `json:"update"`
+	// Moderation 内容审核/病毒扫描状态（core#121）。
+	//
+	// ⚠️ 指针：旧服务端没有这段 ⇒ 「未取到」≠「未启用」（与「不知道」和
+	// 「坏了」分开报的同一条原则）。
+	Moderation *doctorModeration `json:"moderation"`
 	// Backup 定时自动备份状态（2026-11-06，5.1.0）。**纯本地**，不出站。
 	Backup struct {
 		Enabled      bool   `json:"enabled"`
@@ -203,6 +216,31 @@ type doctorPayload struct {
 		Running      bool   `json:"running"`
 		LastError    string `json:"last_error"`
 	} `json:"backup"`
+}
+
+// doctorModeration 内容审核段（core#121；只取用到的字段）。
+type doctorModeration struct {
+	Enabled bool         `json:"enabled"`
+	ClamAV  doctorClamAV `json:"clamav"`
+}
+
+// doctorClamAV 病毒扫描可观测段。
+type doctorClamAV struct {
+	Enabled       bool              `json:"enabled"`
+	Addr          string            `json:"addr"`
+	Degraded      bool              `json:"degraded"`
+	DegradedCount int               `json:"degraded_count"`
+	WindowSize    int               `json:"window_size"`
+	ScansInWindow int               `json:"scans_in_window"`
+	LastPing      *doctorClamAVPing `json:"last_ping"`
+}
+
+// doctorClamAVPing 一次探活结果。
+type doctorClamAVPing struct {
+	OK         bool   `json:"ok"`
+	At         string `json:"at"`
+	DurationMs int64  `json:"duration_ms"`
+	Error      string `json:"error"`
 }
 
 // doctorPublicPayload /api/config 的响应形状（降级检查用到的字段）。
@@ -655,6 +693,9 @@ func checksFromDiagnostics(p *doctorPayload) []doctorCheck {
 	// 新版本可用（2026-11-06，5.0.0）
 	checks = append(checks, updateCheck(p))
 
+	// 病毒扫描（core#121）
+	checks = append(checks, clamavCheck(p))
+
 	// 定时自动备份（2026-11-06，5.1.0）
 	checks = append(checks, backupCheck(p, time.Now()))
 
@@ -707,6 +748,67 @@ func updateCheck(p *doctorPayload) doctorCheck {
 		c.Status = "ok"
 		c.Detail = fmt.Sprintf("已是最新（%s）", p.Update.Current)
 	}
+	return c
+}
+
+// clamavCheck 「病毒扫描」检查项（core#121）。
+//
+// # 为什么是 advisory（WARN 级、但不改退出码）
+//
+// 两个口径要同时成立：
+//  1. 「静默失效」必须可见（issue 核心：fail-open 是对的，但没信号不对）
+//     ⇒ 真 WARN 行（status=warn）；
+//  2. 扫描器挂掉时业务照常放行（fail-open），**部署本身没有坏**
+//     ⇒ 不该让 CI/巡检因「clamd 没起」恒红（与 updateCheck 的告警疲劳
+//     同一条理由）⇒ Advisory=true ⇒ 退出码保持不变。
+//
+// 分级口径：
+//   - 服务端未上报这段（旧版本）⇒ skip（未取到 ≠ 未启用）；
+//   - 未启用 ⇒ ok（配置层面的正常选择）；
+//   - 已启用但探活失败（degraded，fail-open 放行中）⇒ warn + advisory；
+//   - 已启用、探活正常，但近 N 次扫描有 fail-open 放行 ⇒ warn + advisory
+//     （扫描器已恢复，但期间有文件没被扫过）；
+//   - 全好 ⇒ ok。
+func clamavCheck(p *doctorPayload) doctorCheck {
+	c := doctorCheck{Name: "病毒扫描"}
+	m := p.Moderation
+	if m == nil {
+		c.Status = "skip"
+		c.Detail = "服务端未上报（版本较旧）"
+		return c
+	}
+	if !m.ClamAV.Enabled {
+		c.Status = "ok"
+		c.Detail = "未启用（moderation.clamav.enabled=false）"
+		return c
+	}
+	if m.ClamAV.Degraded {
+		c.Status = "warn"
+		c.Advisory = true
+		c.Detail = "扫描器不可达（当前放行）"
+		if m.ClamAV.LastPing != nil {
+			pingState := "fail"
+			if m.ClamAV.LastPing.OK {
+				pingState = "ok"
+			}
+			c.Detail += fmt.Sprintf("，最近探活 %s（%dms）", pingState, m.ClamAV.LastPing.DurationMs)
+			if m.ClamAV.LastPing.Error != "" {
+				c.Detail += "：" + m.ClamAV.LastPing.Error
+			}
+		}
+		c.Advice = "检查 clamd 是否在跑、moderation.clamav.addr（" + m.ClamAV.Addr + "）是否可达；修复前文件不被扫描（fail-open 放行）"
+		return c
+	}
+	if m.ClamAV.DegradedCount > 0 {
+		c.Status = "warn"
+		c.Advisory = true
+		c.Detail = fmt.Sprintf("扫描器已恢复，但近 %d 次扫描有 %d 次因故障放行（fail-open）",
+			m.ClamAV.ScansInWindow, m.ClamAV.DegradedCount)
+		c.Advice = "这段时间的文件未被扫描；如需追溯，按该时间窗排查上传记录"
+		return c
+	}
+	c.Status = "ok"
+	c.Detail = "扫描器存活（clamd " + m.ClamAV.Addr + "）"
 	return c
 }
 
@@ -895,7 +997,12 @@ func summarize(checks []doctorCheck) doctorSummary {
 		case "ok":
 			s.OK++
 		case "warn":
-			s.Warn++
+			if c.Advisory {
+				// advisory：显示 WARN 但不参与退出码（core#121）。
+				s.Note++
+			} else {
+				s.Warn++
+			}
 		case "fail":
 			s.Fail++
 		case "na":
@@ -944,27 +1051,33 @@ func printDoctorReport(r doctorReport) {
 	if r.Summary.NA > 0 {
 		naPart = fmt.Sprintf("%d 项未配置", r.Summary.NA)
 	}
+	// 提示级（advisory，core#121）：显示但不改退出码 ⇒ 只作后缀，
+	// 且 Note==0 时结论行文案与既有输出逐字一致（老脚本按它判成功）。
+	noteSuffix := ""
+	if r.Summary.Note > 0 {
+		noteSuffix = fmt.Sprintf("（另有 %d 项提示）", r.Summary.Note)
+	}
 	switch {
 	case r.Summary.Fail > 0:
 		if naPart != "" {
-			fmt.Fprintf(stdout, "结论：%d 项故障、%d 项需处置、%s、%d 项正常\n",
-				r.Summary.Fail, r.Summary.Warn, naPart, r.Summary.OK)
+			fmt.Fprintf(stdout, "结论：%d 项故障、%d 项需处置、%s、%d 项正常%s\n",
+				r.Summary.Fail, r.Summary.Warn, naPart, r.Summary.OK, noteSuffix)
 		} else {
-			fmt.Fprintf(stdout, "结论：%d 项故障、%d 项需处置、%d 项正常\n",
-				r.Summary.Fail, r.Summary.Warn, r.Summary.OK)
+			fmt.Fprintf(stdout, "结论：%d 项故障、%d 项需处置、%d 项正常%s\n",
+				r.Summary.Fail, r.Summary.Warn, r.Summary.OK, noteSuffix)
 		}
 	case r.Summary.Warn > 0:
 		if naPart != "" {
-			fmt.Fprintf(stdout, "结论：%d 项需处置、%s、%d 项正常\n",
-				r.Summary.Warn, naPart, r.Summary.OK)
+			fmt.Fprintf(stdout, "结论：%d 项需处置、%s、%d 项正常%s\n",
+				r.Summary.Warn, naPart, r.Summary.OK, noteSuffix)
 		} else {
-			fmt.Fprintf(stdout, "结论：%d 项需处置、%d 项正常\n", r.Summary.Warn, r.Summary.OK)
+			fmt.Fprintf(stdout, "结论：%d 项需处置、%d 项正常%s\n", r.Summary.Warn, r.Summary.OK, noteSuffix)
 		}
 	case r.Summary.NA > 0:
-		fmt.Fprintf(stdout, "结论：%s、%d 项正常（%d 项无法判定）\n",
-			naPart, r.Summary.OK, r.Summary.NA)
+		fmt.Fprintf(stdout, "结论：%s、%d 项正常（%d 项无法判定）%s\n",
+			naPart, r.Summary.OK, r.Summary.NA, noteSuffix)
 	default:
-		fmt.Fprintf(stdout, "结论：全部正常（%d 项）\n", r.Summary.OK)
+		fmt.Fprintf(stdout, "结论：全部正常（%d 项）%s\n", r.Summary.OK, noteSuffix)
 	}
 }
 
