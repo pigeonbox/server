@@ -2,7 +2,7 @@ module github.com/pigeonbox/server
 
 go 1.26.5
 
-toolchain go1.26.10
+toolchain go1.26.11
 
 require (
 	github.com/glebarez/sqlite v1.11.0
