@@ -280,8 +280,12 @@ func targetHasData(db *gorm.DB) (bool, error) {
 		}
 		var n int64
 		if err := db.Table(spec).Unscoped().Count(&n).Error; err != nil {
-			// 目标库还没建表时 Count 会报「表不存在」⇒ 视为空。
-			continue
+			// HasTable 刚判过为 true ⇒ 表**是**存在的：此时 Count 失败只可能是
+			// SELECT 权限被拒 / 视图 / 驱动异常，绝不是「表还没建」（原注释与
+			// 上一步自相矛盾，issue #132）。
+			// ⇒ fail-closed：把故障当空库会**放行混库导入**（该命令头注释明令
+			//   「目标库必须为空」）⇒ 直接报错中止。
+			return false, fmt.Errorf("查询表 %s 行数失败（表已存在；拒绝按空库放行导入）: %w", spec, err)
 		}
 		if n > 0 {
 			return true, nil

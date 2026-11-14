@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/oekit/pkg/cli"
 )
 
 // CLI 旗标缺值守卫（2026-10-26 审计 P1）。
@@ -202,4 +205,124 @@ func TestP2PPushCodeFromArgvStillWorks(t *testing.T) {
 func isUsageErr(err error) bool {
 	var ue *usageErr
 	return err != nil && errors.As(err, &ue)
+}
+
+// ===== issue #127：-t 与文件互斥（文本分支不得静默吞文件） =====
+
+// TestPutTextAndFilesMutuallyExclusive —— `pb put -t "报告在此" report.pdf`
+// 必须是用法错误（退出码 2）且**一个请求都不发**。
+//
+// 复现（issue #127）：原实现文本分支在 len(files)==0 检查**之前**就 return
+// ⇒ 只建文本分享、report.pdf 被静默丢掉，命令还返回成功并打印取件码
+// ⇒ 寄件人把链接发出去了，取件人打开却没有文件。
+func TestPutTextAndFilesMutuallyExclusive(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{\"code\":0,\"message\":\"ok\",\"data\":{\"code\":\"AbCd1234\",\"pickup_code\":\"X1X2X3\"}}"))
+	}))
+	defer srv.Close()
+	useTestServer(t, srv)
+
+	err := cmdPut([]string{"-t", "报告在此", "report.pdf"})
+	if err == nil {
+		t.Fatalf("-t 与文件同给必须报用法错误（原实现静默丢文件并返回成功）")
+	}
+	if !isUsageErr(err) {
+		t.Fatalf("应是用法错误（退出码 2），实际 %T: %v", err, err)
+	}
+	if calls != 0 {
+		t.Fatalf("互斥校验必须先于任何请求，实际发了 %d 次", calls)
+	}
+
+	// 解析层同样要拦：put 与 import 共用 parsePutFlags ⇒ 判据只写一处
+	if _, _, perr := parsePutFlags([]string{"-t", "报告在此", "report.pdf"}); !isUsageErr(perr) {
+		t.Fatalf("parsePutFlags 应拒绝 text+files 同给，实际 %v", perr)
+	}
+}
+
+// TestImportTextFlagRejected —— import 不支持 -t（同一解析器、同一静默丢弃类）：
+// `pb import -t "文本" /nas/x.jpg` 原实现会把 text 静默丢掉照常导入。
+func TestImportTextFlagRejected(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{\"code\":0,\"message\":\"ok\",\"data\":{\"code\":\"AbCd1234\"}}"))
+	}))
+	defer srv.Close()
+	useTestServer(t, srv)
+
+	err := cmdImport([]string{"-t", "文本", "/nas/x.jpg"})
+	if err == nil {
+		t.Fatalf("import 不支持 -t，必须报用法错误（原实现静默丢弃 text）")
+	}
+	if !isUsageErr(err) {
+		t.Fatalf("应是用法错误（退出码 2），实际 %T: %v", err, err)
+	}
+	if calls != 0 {
+		t.Fatalf("用法错误不得发出请求，实际发了 %d 次", calls)
+	}
+}
+
+// ===== issue #129：url 的 -p 缺值 + 其余子命令的旗标纪律 =====
+
+// TestURLMissingPasswordValueIsUsageError —— `pb url -p`（漏给取件码）原实现
+// 把 "-p" 当取件码：打 …/#/share/-p 并向服务端请求 code=-p ⇒ 业务错（退出码 1）
+// 而非用法错（2），脚本无法区分「我写错了」与「服务端拒绝」。
+func TestURLMissingPasswordValueIsUsageError(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"仅 -p", []string{"-p"}},
+		{"仅 --password", []string{"--password"}},
+		{"-p 有值但缺取件码", []string{"-p", "pw"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := parseURLArgs(tc.args)
+			if err == nil {
+				t.Fatalf("旗标缺值必须报错（原实现把 %q 当取件码）", tc.args)
+			}
+			if !isUsageErr(err) {
+				t.Fatalf("应是用法错误（退出码 2），实际 %T: %v", err, err)
+			}
+		})
+	}
+}
+
+// TestSubcommandFlagGuardMatrix —— 把 url/ls/rm 一并过一遍（issue #129 修复
+// 方向）：旗标纪律不只覆盖 put/import，未知旗标一律退出码 2 且不发请求。
+func TestSubcommandFlagGuardMatrix(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"url 仅 -p（被当取件码）", []string{"url", "-p"}},
+		{"rm 旗标被当取件码", []string{"rm", "-p"}},
+		{"ls 未知参数被静默忽略", []string{"ls", "--wat"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte("{\"code\":0,\"message\":\"ok\",\"data\":{\"items\":[],\"total\":0}}"))
+			}))
+			defer srv.Close()
+			useTestServer(t, srv)
+
+			var out, errOut strings.Builder
+			code := app().Run(context.Background(), tc.args, &out, &errOut)
+			if code != cli.ExitUsage {
+				t.Fatalf("退出码 = %d，期望 %d（用法错误）；stderr=%q", code, cli.ExitUsage, errOut.String())
+			}
+			if calls != 0 {
+				t.Fatalf("用法错误不得发出请求，实际 %d 次", calls)
+			}
+		})
+	}
 }
