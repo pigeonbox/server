@@ -75,7 +75,8 @@ func storageMigrate(args []string) error {
 		payload["dry_run"] = true
 	}
 	body, _ := json.Marshal(payload)
-	ar, err := doReq("POST", "/admin/storage/migrate", bytes.NewReader(body), "application/json")
+	// 存储迁移是长任务（可能搬很久）⇒ 走上传长超时，不与查询类共享短超时（issue #128）。
+	ar, err := doUploadReq("POST", "/admin/storage/migrate", bytes.NewReader(body), "application/json")
 	if err != nil {
 		return err
 	}

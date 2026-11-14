@@ -92,7 +92,7 @@ func app() *cli.App {
 		Commands: []cli.Command{
 			{Name: "put", Summary: "上传文件（多文件合并为一个分享）", Run: run(cmdPut)},
 			{Name: "import", Summary: "服务器本地文件导入（免上传，NAS 场景）", Run: run(cmdImport)},
-			{Name: "ls", Summary: "我的分享列表", Run: run(func([]string) error { return cmdList() })},
+			{Name: "ls", Summary: "我的分享列表", Run: run(cmdList)},
 			{Name: "url", Summary: "取分享链接与下载直链", Run: run(cmdURL)},
 			{Name: "rm", Summary: "删除分享", Run: run(cmdDelete)},
 			{Name: "p2p", Summary: "联邦（设备名录/待收邀请/推送）", Run: run(p2pCmd)},
@@ -283,8 +283,33 @@ type apiResp struct {
 	Data    json.RawMessage `json:"data"`
 }
 
+// 请求超时（issue #128）：
+//
+//   - queryTimeout：查询/自检类请求（doctor 深度检查、ls/url/rm/p2p、文本分享）
+//     ——PB_SERVER 指向被防火墙 DROP 的黑洞地址时必须秒级失败，否则巡检脚本 /
+//     CI / 发车前检查会挂满超时上限；
+//   - uploadTimeout：put 直传、多文件合并、存储迁移这类**长任务**专用。
+//
+// 此前两者共用 doReqWithHeaders 里写死的 30 分钟 ⇒ 一次 pb doctor 要挂半小时
+// （同命令的降级检查却是 30s ⇒ 同一次自检里两次检查超时差 60 倍）。
+//
+// ⚠️ 默认值由 timeout_test.go 钉住；改这里先看那两条判据。
+var (
+	queryTimeout  = 30 * time.Second
+	uploadTimeout = 30 * time.Minute
+)
+
+// doReq 发查询类请求（短超时，见 queryTimeout）。
 func doReq(method, path string, body io.Reader, contentType string) (*apiResp, error) {
 	return doReqWithHeaders(method, path, body, contentType, nil)
+}
+
+// doUploadReq 发**长任务**请求（put 直传 / 多文件合并 / 存储迁移 / 本地导入，见 uploadTimeout）。
+//
+// 大文件上传走短超时会把正常上传掐死 ⇒ 这些调用点必须显式选长超时，
+// 不能顺手复用 doReq。
+func doUploadReq(method, path string, body io.Reader, contentType string) (*apiResp, error) {
+	return doReqWithHeadersTimeout(method, path, body, contentType, nil, uploadTimeout)
 }
 
 // doPublicReq 发**匿名**请求（不带 X-API-Key，且**不因缺 Key 而拒绝**）。
@@ -328,9 +353,15 @@ func doPublicReq(method, path string) (*apiResp, error) {
 	return &ar, nil
 }
 
-// doReqWithHeaders 发请求（可带附加头）。取件密码经 X-Share-Password 头
-// 传递（2026-10-16 拍板）：query 形态有访问日志/浏览器历史/Referer 泄漏面。
+// doReqWithHeaders 发**查询类**请求（短超时，见 queryTimeout）。
+// 取件密码经 X-Share-Password 头传递（2026-10-16 拍板）：query 形态有访问
+// 日志/浏览器历史/Referer 泄漏面。
 func doReqWithHeaders(method, path string, body io.Reader, contentType string, headers map[string]string) (*apiResp, error) {
+	return doReqWithHeadersTimeout(method, path, body, contentType, headers, queryTimeout)
+}
+
+// doReqWithHeadersTimeout 发请求（可带附加头与单次超时，issue #128）。
+func doReqWithHeadersTimeout(method, path string, body io.Reader, contentType string, headers map[string]string, timeout time.Duration) (*apiResp, error) {
 	if apiKey == "" {
 		return nil, fmt.Errorf("未设置 PB_API_KEY（用户中心 → API 令牌 创建）")
 	}
@@ -345,7 +376,7 @@ func doReqWithHeaders(method, path string, body io.Reader, contentType string, h
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	client := &http.Client{Timeout: 30 * time.Minute}
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -438,6 +469,12 @@ func parsePutFlags(args []string) (*putFlags, []string, error) {
 			files = append(files, args[i])
 		}
 	}
+	// -t 与文件互斥（issue #127）：文本分支在 `len(files)==0` 检查**之前**就
+	// return ⇒ 文件被静默丢掉、命令还返回成功（取件人打开链接没有文件）。
+	// 判据放在解析层：put 与 import 共用本函数，一处拦住两处。
+	if f.text != "" && len(files) > 0 {
+		return nil, nil, errUsage("-t 分享文本与文件互斥：要么只给文本，要么只给文件（见 pb help）")
+	}
 	return f, files, nil
 }
 
@@ -512,7 +549,7 @@ func cmdPut(args []string) error {
 		_ = writer.WriteField("custom_code", f.code)
 	}
 	_ = writer.Close()
-	ar, err := doReq("POST", "/api/v1/share/multi-direct", form, writer.FormDataContentType())
+	ar, err := doUploadReq("POST", "/api/v1/share/multi-direct", form, writer.FormDataContentType())
 	if err != nil {
 		return err
 	}
@@ -548,7 +585,7 @@ func putDirect(path string, expVal int, expStyle string, f *putFlags) error {
 	}
 	_ = writer.Close()
 
-	ar, err := doReq("POST", "/share/file/", form, writer.FormDataContentType())
+	ar, err := doUploadReq("POST", "/share/file/", form, writer.FormDataContentType())
 	if err != nil {
 		return err
 	}
@@ -583,7 +620,9 @@ func cmdImport(args []string) error {
 		payload["custom_code"] = f.code
 	}
 	body, _ := json.Marshal(payload)
-	ar, err := doReq("POST", "/api/v1/user/shares/import-local", bytes.NewReader(body), "application/json")
+	// 本地导入是**服务端整文件拷贝**（SaveStream + 全量哈希，core 侧同步完成）：
+	// 大文件可达数分钟 ⇒ 走上传长超时，不吃查询类 30s（issue #128 修复的回归面）。
+	ar, err := doUploadReq("POST", "/api/v1/user/shares/import-local", bytes.NewReader(body), "application/json")
 	if err != nil {
 		return err
 	}
@@ -592,7 +631,14 @@ func cmdImport(args []string) error {
 
 // ===== ls / url / rm =====
 
-func cmdList() error {
+// cmdList 我的分享列表。
+//
+// 不接受任何参数（issue #129）：原实现把 args 直接丢掉 ⇒ `pb ls --wat`
+// 静默成功，未知旗标毫无信号。
+func cmdList(args []string) error {
+	if len(args) > 0 {
+		return errUsage("pb ls 不接受参数（" + args[0] + "）；见 pb help")
+	}
 	ar, err := doReq("GET", "/api/v1/user/shares?page=1&page_size=50", nil, "")
 	if err != nil {
 		return err
@@ -658,7 +704,13 @@ func parseURLArgs(args []string) (password, code string, err error) {
 	rest := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		switch {
-		case (args[i] == "-p" || args[i] == "--password") && i+1 < len(args):
+		case args[i] == "-p" || args[i] == "--password":
+			// 缺值必须报用法错（issue #129，与 parsePutFlags 同一口径）：
+			// 原实现条件不成立就落进 default ⇒ "-p" 被当**取件码**，
+			// 打出 …/#/share/-p 并向服务端请求 code=-p ⇒ 业务错（1）而非用法错（2）。
+			if i+1 >= len(args) {
+				return "", "", errUsage("旗标 " + args[i] + " 缺少取值")
+			}
 			i++
 			password = args[i]
 		case strings.HasPrefix(args[i], "--password="):
@@ -674,6 +726,11 @@ func parseURLArgs(args []string) (password, code string, err error) {
 }
 
 func cmdDelete(args []string) error {
+	// 旗标形状的参数当用法错（issue #129）：原实现只看「恰好 1 个参数」⇒
+	// `pb rm -p` 把 "-p" 当取件码发给服务端（业务错 1，而非用法错 2）。
+	if len(args) == 1 && strings.HasPrefix(args[0], "-") {
+		return errUsage("未知旗标: " + args[0] + "（用法: pb rm <code>；见 pb help）")
+	}
 	if len(args) != 1 {
 		return errUsage("用法: pb rm <code>")
 	}

@@ -59,4 +59,35 @@ if [ -z "${PB_ADMIN_PASSWORD:-}" ] && [ "${PB_DISABLE_DEFAULT_ADMIN:-}" != "true
     fi
 fi
 
-exec ./server --config ./config/config.yaml
+# ── 参数透传（issue #126）──────────────────────────────────────────────
+# 此前末行硬编码 `exec ./server --config ./config/config.yaml`（没有 $@）：
+# CMD 成了死参数，`docker run <镜像> --config /app/config/custom.yaml` 收下参数却
+# 完全不看，仍按默认配置起服且无任何提示（用户以为换了配置实际没有）。
+#
+# 三种走法（默认行为与改动前一致，有参时才真透传）：
+#   1. 无参（直接跑 entrypoint / CMD 被清空）→ 补默认起服命令（与 Dockerfile
+#      CMD 同形）⇒ 直跑镜像的默认行为不变；
+#   2. 首参是**旗标**（`docker run <镜像> --config x`）→ docker 会用用户参数
+#      **整个替换 CMD** ⇒ 脚本收到的是旗标而非程序名 ⇒ 先补默认程序 ./server，
+#      否则 exec 会去执行 "--config" 本身；
+#   3. 其余（`docker run <镜像> pb doctor`、`docker run <镜像> ./server ...`）→
+#      原样透传；非路径形式且不在 PATH 里、但 WORKDIR 下存在同名文件（./pb）
+#      时补 ./ 前缀，否则 alpine 的 PATH 里没有 /app 会 exec 失败。
+if [ "$#" -eq 0 ]; then
+    set -- ./server --config ./config/config.yaml
+else
+    case "$1" in
+        -*) set -- ./server "$@" ;;
+        */*) ;;
+        *)
+            # 替换而不是前置：set -- "./$1" "$@" 会把原 $1 也留在参数表里
+            # （实测得到 "pb pb doctor"）⇒ 先 shift 再补回。
+            if [ -e "./$1" ] && ! command -v "$1" >/dev/null 2>&1; then
+                prog="./$1"
+                shift
+                set -- "$prog" "$@"
+            fi
+            ;;
+    esac
+fi
+exec "$@"

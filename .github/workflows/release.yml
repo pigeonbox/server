@@ -34,6 +34,12 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE: ghcr.io/pigeonbox/server
+  # 本次发布的 tag（issue #125）：run: 脚本一律经环境变量 "$TAG" 取值，不再把
+  # ${{ github.ref_name }} 直插 shell —— git ref 允许引号/分号/美元符等字符，
+  # 直插等于给「有 write 权限者」一条绕过 PR 评审的脚本注入面（本 job 带
+  # contents+packages: write，回调步还握跨仓 PB_BOT_TOKEN）。
+  # ${{ env.TAG }} 是 env 上下文、可用于 with:；run: 里则是真实环境变量。
+  TAG: ${{ github.ref_name }}
 
 jobs:
   release:
@@ -50,7 +56,7 @@ jobs:
       - name: 解析 frontend ref(同号 tag 硬门)
         id: fe
         run: |
-          FE_TAG="${{ github.ref_name }}"
+          FE_TAG="$TAG"
           git ls-remote https://github.com/pigeonbox/frontend.git "refs/tags/${FE_TAG}" | grep -q . \
             || { echo "::error::frontend 仓无同号 tag ${FE_TAG}——发版走 hub 列车编排器(先 frontend 后 server),勿手打 server tag"; exit 1; }
           echo "ref=${FE_TAG}" >> "$GITHUB_OUTPUT"
@@ -90,14 +96,14 @@ jobs:
       # 直接红,待 frontend 同号 tag/主干 bump 合入后 re-run 本工作流即可。
       - name: 断言 frontend 源码版本与 tag 同号
         run: |
-          EXPECT="${{ github.ref_name }}"
+          EXPECT="$TAG"
           EXPECT="${EXPECT#v}"
           GOT="$(node -p "require('${{ github.workspace }}/ws/frontend/package.json').version")"
           if [ "$GOT" != "$EXPECT" ]; then
-            echo "::error::frontend 源码版本($GOT)与 tag(${{ github.ref_name }})不同号(检出 ref: ${{ steps.fe.outputs.ref || 'main(回退)' }})。拒绝构建错版镜像;请等 frontend bump 合入/同号 tag 就绪后 re-run。"
+            echo "::error::frontend 源码版本($GOT)与 tag($TAG)不同号(检出 ref: $TAG)。拒绝构建错版镜像;请等 frontend bump 合入/同号 tag 就绪后 re-run。"
             exit 1
           fi
-          echo "frontend 版本 $GOT 与 tag 同号 ✓(检出 ref: ${{ steps.fe.outputs.ref || 'main(回退)' }})"
+          echo "frontend 版本 $GOT 与 tag $TAG 同号 ✓(检出 ref: $TAG)"
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
@@ -115,6 +121,22 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - id: btime
         run: echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+      # ── latest 打不打（issue #131）──────────────────────────────────────
+      # 只有本次 tag 是全仓**最高 semver**时才打 latest：给旧线补 hotfix tag 会把
+      # ghcr/Docker Hub 的 latest 与 GitHub Release 的「Latest」全部指回旧版 ⇒
+      # 跟随 latest 的部署被静默降级（可能退回已修漏洞的版本）。
+      # 比较逻辑收在 scripts/image_tags.py（单一真相源 + 离线自测）。
+      - id: latest
+        name: 判定 latest（全仓最高 semver 才打）
+        run: |
+          set -euo pipefail
+          # 用 ls-remote 拿**远端全量** tag：actions/checkout 默认只检出触发 tag，
+          # 本地 tag 集不全 ⇒ 会把「不存在的更高版本」判成本次最高。
+          EXISTING="$(git ls-remote --tags https://github.com/pigeonbox/server.git 'refs/tags/v*')"
+          value="$(python3 "${{ github.workspace }}/ws/server/scripts/image_tags.py" \
+            --tag "$TAG" --check-latest --existing-tags "$EXISTING")"
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+          echo "latest=$value（tag $TAG 对比全仓 semver）"
       - id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
@@ -122,7 +144,7 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ steps.latest.outputs.value == 'true' }}
       # ── frontend 的 ghcr tag（先算出来，供合并步骤用）──────────────
       - id: meta-frontend
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
@@ -131,7 +153,7 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ steps.latest.outputs.value == 'true' }}
       # ── 双推标签合并（2026-10-31）────────────────────────────────────
       # metadata-action 只产出 ghcr 的 tag；Docker Hub 的同名 tag 由本步骤
       # 按**同一套语义**（version / major.minor / latest）拼出来，
@@ -152,6 +174,7 @@ jobs:
           SERVER_GHCR_TAGS: ${{ steps.meta.outputs.tags }}
           FRONTEND_GHCR_TAGS: ${{ steps.meta-frontend.outputs.tags }}
           DOCKERHUB_ENABLED: ${{ steps.dhub.outputs.enabled }}
+          IS_LATEST: ${{ steps.latest.outputs.value }}
           HUB_REPO_SERVER: ${{ vars.DOCKER_HUB_REPO_SERVER || 'pigeonbox/server' }}
           HUB_REPO_FRONTEND: ${{ vars.DOCKER_HUB_REPO_FRONTEND || 'pigeonbox/frontend' }}
         run: |
@@ -164,6 +187,7 @@ jobs:
           python3 "${{ github.workspace }}/ws/server/scripts/image_tags.py" \
             --tag "$TAG" \
             --enabled "$DOCKERHUB_ENABLED" \
+            --is-latest "$IS_LATEST" \
             --ghcr-server "$SERVER_GHCR_TAGS" \
             --ghcr-frontend "$FRONTEND_GHCR_TAGS" \
             --hub-server-repo "$HUB_REPO_SERVER" \
@@ -181,7 +205,7 @@ jobs:
           # (registry 拉取不受影响,仅 Web UI 坏),关掉保证包页可开、可见性可改
           provenance: false
           build-args: |
-            VERSION=${{ github.ref_name }}
+            VERSION=${{ env.TAG }}
             COMMIT=${{ github.sha }}
             BUILD_TIME=${{ steps.btime.outputs.date }}
             GOPROXY=https://proxy.golang.org,direct
@@ -206,8 +230,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if ! gh release view "${{ github.ref_name }}" -R ${{ github.repository }} >/dev/null 2>&1; then
-            gh release create "${{ github.ref_name }}" -R ${{ github.repository }} --generate-notes --latest
+          if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # 不加 --latest（issue #131）：让 GitHub 按 semver 自动判定「Latest」，
+            # 旧线 hotfix 才不会把 Latest 指回旧版（与镜像 latest 同一条纪律）。
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --generate-notes
           else
             echo "Release 已存在，跳过"
           fi
@@ -248,11 +274,11 @@ jobs:
           set -euo pipefail
           for f in "${{ github.workspace }}/cli"/pb_*; do
             [ -f "$f" ] || continue
-            if gh release view "${{ github.ref_name }}" -R ${{ github.repository }} >/dev/null 2>&1; then
-              gh release upload "${{ github.ref_name }}" "$f" -R ${{ github.repository }} --clobber
+            if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh release upload "$TAG" "$f" -R "$GITHUB_REPOSITORY" --clobber
             fi
           done
-          echo "CLI 资产已挂到 Release ${{ github.ref_name }}"
+          echo "CLI 资产已挂到 Release $TAG"
 
       # ── 回调 hub 列车编排器 ──
       # 镜像发布成功后唤醒 train-orchestrator advance 核对完成度。charts 对齐不再由
@@ -262,9 +288,13 @@ jobs:
         env:
           CB_TOKEN: ${{ secrets.PB_BOT_TOKEN }}
         run: |
+          # JSON 用 jq --arg 构造（issue #125）：tag 里若带引号/反斜杠，
+          # 手拼的单引号串会破出 JSON / shell 语义。
+          payload=$(jq -cn --arg tag "$TAG" \
+            '{event_type:"train-advance",client_payload:{component:"server",tag:$tag}}')
           curl -fsSL -X POST \
             -H "Authorization: Bearer $CB_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/pigeonbox/pigeonbox/dispatches \
-            -d '{"event_type":"train-advance","client_payload":{"component":"server","tag":"${{ github.ref_name }}"}}' \
+            -d "$payload" \
             || echo "::warning::hub 回调失败(train-orchestrator sweep 兜底)"
