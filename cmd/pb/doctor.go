@@ -263,6 +263,9 @@ type doctorFlags struct {
 	jsonOut    bool
 	server     string
 	apiKeyFile string
+	// exportPath 诊断包导出路径（hub#385）：一次写出 {report, diagnostics}
+	// 信封，供离线交给维护者解析；"-" = 写 stdout。
+	exportPath string
 }
 
 // parseDoctorFlags 解析 pb doctor 的旗标。
@@ -313,11 +316,26 @@ func parseDoctorFlags(args []string) (doctorFlags, error) {
 			if strings.TrimSpace(f.apiKeyFile) == "" {
 				return f, errUsage("--api-key-file 不能为空（要给一个文件路径）")
 			}
+		case a == "--export":
+			v, ni, err := needValue("--export", i)
+			if err != nil {
+				return f, err
+			}
+			if strings.TrimSpace(v) == "" {
+				return f, errUsage("--export 不能为空（要给文件路径，或 \"-\" 写标准输出）")
+			}
+			f.exportPath = v
+			i = ni
+		case strings.HasPrefix(a, "--export="):
+			f.exportPath = strings.TrimPrefix(a, "--export=")
+			if strings.TrimSpace(f.exportPath) == "" {
+				return f, errUsage("--export 不能为空（要给文件路径，或 \"-\" 写标准输出）")
+			}
 		case a == "--api-key" || strings.HasPrefix(a, "--api-key="):
 			// ⚠️ 拒绝明文密钥：argv 会进 ps 与 shell 历史。
 			return f, errUsage("--api-key 不接受明文密钥（会进 ps 与 shell 历史）；请用 --api-key-file <路径> 或环境变量 PB_API_KEY")
 		default:
-			return f, errUsage("未知参数: " + a + "（pb doctor 支持 --json / --server <url> / --api-key-file <路径>）")
+			return f, errUsage("未知参数: " + a + "（pb doctor 支持 --json / --export <路径> / --server <url> / --api-key-file <路径>）")
 		}
 	}
 	return f, nil
@@ -527,6 +545,12 @@ func cmdDoctor(args []string) error {
 	}
 
 	report.Summary = summarize(report.Checks)
+	if f.exportPath != "" {
+		if err := writeDoctorExport(f.exportPath, report, deep); err != nil {
+			return err
+		}
+		fmt.Fprintln(stderr, "诊断包已导出:", f.exportPath)
+	}
 	return doctorFinish(report, f.jsonOut)
 }
 
