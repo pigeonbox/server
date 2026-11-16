@@ -8,7 +8,7 @@ require (
 	github.com/glebarez/sqlite v1.11.0
 	github.com/oekit/core v0.14.2
 	github.com/oekit/pkg v0.46.0
-	github.com/pigeonbox/core v0.40.0
+	github.com/pigeonbox/core v0.41.0
 	go.uber.org/zap v1.28.0
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/driver/postgres v1.6.3
@@ -30,10 +30,14 @@ require (
 	github.com/disintegration/imaging v1.6.2 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
+	github.com/fxamacker/cbor/v2 v2.9.4 // indirect
 	github.com/glebarez/go-sqlite v1.23.0 // indirect
 	github.com/go-sql-driver/mysql v1.10.1 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
+	github.com/go-webauthn/webauthn v0.18.2 // indirect
+	github.com/go-webauthn/x v0.3.1 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
+	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
@@ -47,6 +51,7 @@ require (
 	github.com/klauspost/cpuid/v2 v2.4.2 // indirect
 	github.com/klauspost/crc32 v1.3.0 // indirect
 	github.com/kr/fs v0.1.0 // indirect
+	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/minio/crc64nvme v1.1.1 // indirect
 	github.com/minio/md5-simd v1.1.2 // indirect
@@ -54,7 +59,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
-	github.com/oekit/concurrency v0.34.0 // indirect
+	github.com/oekit/concurrency v0.34.1 // indirect
 	github.com/oekit/gormx v0.11.14 // indirect
 	github.com/oekit/kitx v0.9.0 // indirect
 	github.com/oekit/logx v0.10.0 // indirect
@@ -62,7 +67,7 @@ require (
 	github.com/pandatix/go-abnf v0.5.5 // indirect
 	github.com/pelletier/go-toml/v2 v2.4.3 // indirect
 	github.com/philhofer/fwd v1.2.1 // indirect
-	github.com/pigeonbox/contracts v0.23.0 // indirect
+	github.com/pigeonbox/contracts v0.25.0 // indirect
 	github.com/pkg/sftp v1.13.12 // indirect
 	github.com/prometheus/client_golang v1.25.0 // indirect
 	github.com/prometheus/client_model v0.6.3 // indirect
@@ -86,6 +91,7 @@ require (
 	github.com/tidwall/pretty v1.2.2 // indirect
 	github.com/tinylib/msgp v1.6.5 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
+	github.com/x448/float16 v0.8.4 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.uber.org/atomic v1.12.0 // indirect
