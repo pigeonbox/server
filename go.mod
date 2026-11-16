@@ -6,8 +6,8 @@ toolchain go1.26.11
 
 require (
 	github.com/glebarez/sqlite v1.11.0
-	github.com/oekit/core v0.14.2
-	github.com/oekit/pkg v0.46.0
+	github.com/oekit/core v0.15.4
+	github.com/oekit/pkg v0.52.0
 	github.com/pigeonbox/core v0.41.0
 	go.uber.org/zap v1.28.0
 	gorm.io/driver/mysql v1.6.0
@@ -59,11 +59,11 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
-	github.com/oekit/concurrency v0.34.1 // indirect
-	github.com/oekit/gormx v0.11.14 // indirect
-	github.com/oekit/kitx v0.9.0 // indirect
-	github.com/oekit/logx v0.10.0 // indirect
-	github.com/oekit/redisx v0.14.1 // indirect
+	github.com/oekit/concurrency v0.38.1 // indirect
+	github.com/oekit/gormx v0.12.2 // indirect
+	github.com/oekit/kitx v0.10.1 // indirect
+	github.com/oekit/logx v0.11.0 // indirect
+	github.com/oekit/redisx v0.16.3 // indirect
 	github.com/pandatix/go-abnf v0.5.5 // indirect
 	github.com/pelletier/go-toml/v2 v2.4.3 // indirect
 	github.com/philhofer/fwd v1.2.1 // indirect
