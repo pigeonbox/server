@@ -59,15 +59,25 @@ COPY --from=go-builder /out/pb ./pb
 # / k8s 三种起法行为一致(此前只在 compose 的 entrypoint 里有,直跑镜像会撞
 # "refusing to create default admin" 的墙)。详见 docker-entrypoint.sh 头注释。
 COPY server/docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod 0755 /app/docker-entrypoint.sh
+# 健康检查端口解析（server#136）：entrypoint 把实际监听端口写 /tmp/pb-health-port，
+# healthcheck.sh 读它——HEALTHCHECK 不再硬编码 12345。resolver 与 entrypoint
+# 共用同一优先级（PB_HEALTH_PORT > PB_SERVER_PORT > PORT > yaml server.port）。
+COPY server/healthcheck.sh /app/healthcheck.sh
+COPY server/scripts/resolve-health-port.sh /app/scripts/resolve-health-port.sh
+RUN chmod 0755 /app/docker-entrypoint.sh /app/healthcheck.sh /app/scripts/resolve-health-port.sh
 # OpenAPI 规范由 core 运行时生成(/openapi.json,openapi_gen.go),无快照文件。
 # ./static 保留空目录:core 默认 StaticDir 指向它,缺失时仅 SPA 路径 404(优雅降级)。
 COPY server/configs ./config/
 USER app
-EXPOSE 12345
+# 构建期注入默认端口（默认值必须与 configs/config.yaml 的 server.port 一致；
+# scripts/check-healthcheck-port.sh 在 CI 断言）。运行期真正监听端口仍可由
+# PB_SERVER_PORT/PORT/--config 覆盖，healthcheck 经 /tmp/pb-health-port 跟随。
+ARG PB_DEFAULT_PORT=12345
+ENV PB_DEFAULT_PORT=${PB_DEFAULT_PORT}
+EXPOSE ${PB_DEFAULT_PORT}
 ENV TZ=Asia/Shanghai
-# wget --spider 发 HEAD,/live 未注册 HEAD 会 404 导致健康检查永不通过,须显式 GET
+# HEALTHCHECK 经脚本解析实际端口；禁止在镜像里写死端口字面量。
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-    CMD wget -q -O /dev/null http://localhost:12345/live || exit 1
+    CMD ["/app/healthcheck.sh"]
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["./server", "--config", "./config/config.yaml"]

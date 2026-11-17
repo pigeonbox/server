@@ -90,4 +90,33 @@ else
             ;;
     esac
 fi
+
+# ── 实际监听端口 → /tmp/pb-health-port（server#136）────────────────────
+# HEALTHCHECK 不能硬编码 12345：端口可能来自 PB_SERVER_PORT/PORT，或
+# `--config` 指向的 yaml。这里按与 core 相同的优先级解析出真实端口，落
+# 一个小文件供 healthcheck.sh 读取。解析失败不阻断启动（回退默认值）。
+SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+CFG=""
+WANT_CFG=0
+for a in "$@"; do
+    case "$a" in
+        --config=*|-config=*) CFG="${a#*=}" ;;
+        --config|-config) WANT_CFG=1 ;;
+        *) if [ "$WANT_CFG" = 1 ]; then CFG="$a"; WANT_CFG=0; fi ;;
+    esac
+done
+[ -n "$CFG" ] || CFG="${CONFIG_PATH:-./config/config.yaml}"
+HEALTH_PORT=$(sh "$SELF_DIR/scripts/resolve-health-port.sh" "$CFG" 2>/dev/null || true)
+[ -n "$HEALTH_PORT" ] || HEALTH_PORT="${PB_DEFAULT_PORT:-12345}"
+PORT_FILE="${PB_HEALTH_PORT_FILE:-/tmp/pb-health-port}"
+if ! printf '%s\n' "$HEALTH_PORT" > "$PORT_FILE" 2>/dev/null; then
+    echo "[entrypoint] ⚠ 无法写健康检查端口文件 $PORT_FILE；HEALTHCHECK 将回退环境变量/默认端口" >&2
+fi
+
+# 测试探针：只解析端口并退出，不 exec 服务（scripts/entrypoint_test.sh 使用）。
+if [ "${PB_HEALTH_PORT_PROBE:-}" = "1" ]; then
+    printf '%s\n' "$HEALTH_PORT"
+    exit 0
+fi
+
 exec "$@"
