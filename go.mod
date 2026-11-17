@@ -8,7 +8,7 @@ require (
 	github.com/glebarez/sqlite v1.11.0
 	github.com/oekit/core v0.15.4
 	github.com/oekit/pkg v0.52.0
-	github.com/pigeonbox/core v0.45.0
+	github.com/pigeonbox/core v0.46.0
 	go.uber.org/zap v1.28.0
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/driver/postgres v1.6.3
@@ -67,7 +67,7 @@ require (
 	github.com/pandatix/go-abnf v0.5.5 // indirect
 	github.com/pelletier/go-toml/v2 v2.4.3 // indirect
 	github.com/philhofer/fwd v1.2.1 // indirect
-	github.com/pigeonbox/contracts v0.25.0 // indirect
+	github.com/pigeonbox/contracts v0.26.0 // indirect
 	github.com/pkg/sftp v1.13.12 // indirect
 	github.com/prometheus/client_golang v1.25.0 // indirect
 	github.com/prometheus/client_model v0.6.3 // indirect
