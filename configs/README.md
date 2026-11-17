@@ -27,6 +27,20 @@ server 的配置模板目录。本目录**只有 YAML 模板，不含 Go 代码*
 敏感项（JWT secret/数据库/Redis/管理员密码等）一律用环境变量注入，
 完整清单见 hub 仓 [`docs/ENVIRONMENT_VARIABLES.md`](https://github.com/pigeonbox/pigeonbox/blob/main/docs/ENVIRONMENT_VARIABLES.md)。
 
+## 镜像 HEALTHCHECK 与端口（server#136）
+
+镜像不再硬编码 HEALTHCHECK 端口 12345：entrypoint 按
+`PB_SERVER_PORT` / `PORT` / `--config`（含 `CONFIG_PATH`）解析实际监听端口并写入
+`/tmp/pb-health-port`，HEALTHCHECK 读取同一文件后请求 `/live`。
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `PB_HEALTH_PORT` | 空 | 显式覆盖 HEALTHCHECK 探测端口（空=按实际监听端口） |
+| `PB_DEFAULT_PORT` | 12345 | 镜像构建期默认端口（Dockerfile ARG；必须与 `config.yaml` 的 `server.port` 一致） |
+| `PB_HEALTH_PORT_FILE` | `/tmp/pb-health-port` | entrypoint 写入实际端口的文件路径（一般无需修改） |
+
+`docker run -e PB_SERVER_PORT=8080 ...` 或用 `--config` 改端口后，容器健康状态仍能正确变绿。
+
 ## 部署模式（多副本）
 
 三个模板均含 `deployment` 注释段：`deployment.mode`（env `PB_DEPLOY_MODE`）支持

@@ -31,6 +31,13 @@ jobs:
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - name: Test
         run: go test -race ./...
+      # 镜像 HEALTHCHECK 端口一致性门禁（server#136）：Dockerfile 写死端口、
+      # 默认端口与 config 漂移、entrypoint 未落实际端口都会在这里红。
+      - name: HEALTHCHECK 端口一致性
+        run: |
+          bash scripts/check-healthcheck-port.sh
+          sh scripts/resolve-health-port_test.sh
+          sh scripts/entrypoint_test.sh
 
       # 依赖漏洞门禁（govulncheck）：可达漏洞即红；修复策略=升依赖地板，不许注释绕过
       - name: Govulncheck
